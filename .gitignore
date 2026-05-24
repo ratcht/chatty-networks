@@ -1,0 +1,4 @@
+.venv/**
+.aim/**
+__pycache__/**
+data/**

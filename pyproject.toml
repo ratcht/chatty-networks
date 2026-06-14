@@ -1,0 +1,9 @@
+[tool.ruff]
+indent-width = 2
+
+[tool.ruff.format]
+indent-style = "space"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

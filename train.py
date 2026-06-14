@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from typing import Optional
 
-import torch
 from torch import nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from aim import Run
-
+from tqdm.auto import tqdm
 
 @dataclass
 class TrainConfig:
@@ -14,6 +13,7 @@ class TrainConfig:
   lr: float
   weight_decay: float
   seed: int
+  dataset_split_seed: int = 0
   log_every: int = 50
   device: str = "cuda"
 
@@ -28,12 +28,14 @@ class TrainJob:
   run: Optional[Run] = None
 
 
+
 def train(job: TrainJob) -> list[float]:
   cfg = job.config
   job.model.to(cfg.device)
   job.model.train()
   losses: list[float] = []
   step = 0
+  pbar = tqdm(total=cfg.epochs * len(job.loader), desc="train")
   try:
     for epoch in range(cfg.epochs):
       for x, y in job.loader:
@@ -46,8 +48,8 @@ def train(job: TrainJob) -> list[float]:
         losses.append(loss.item())
         if job.run is not None:
           job.run.track(loss.item(), name="train_loss", step=step, context={"epoch": epoch})
-        if step % cfg.log_every == 0:
-          print(f"epoch {epoch} step {step} loss {loss.item():.4f}")
+        pbar.update(1)
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
         step += 1
   except KeyboardInterrupt:
     print(f"interrupted at step {step}")

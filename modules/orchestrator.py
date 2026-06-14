@@ -26,6 +26,11 @@ class Orchestrator(nn.Module):
     self.msg_dim = msg_dim
     self.num_classes = num_classes
 
+    # auxiliary heads for training: predict class from each encoder message
+    self.aux_heads = nn.ModuleList([
+      nn.Linear(msg_dim, num_classes) for _ in specialists
+    ])
+
   def train(self, mode: bool = True):
     super().train(mode)
     for s in self.specialists:
@@ -39,7 +44,7 @@ class Orchestrator(nn.Module):
       stack.enter_context(hook_decoder(s.driver.early, decoder_outs[i]))
       stack.enter_context(hook_encoder(s.driver.late, encoder_ins[i]))
 
-  def forward(self, xs: t.Tensor | list[t.Tensor], k_rounds: int = 1) -> Annotated[t.Tensor, "b c"]:
+  def forward(self, xs: t.Tensor | list[t.Tensor], k_rounds: int = 1, return_aux: bool = False) -> t.Tensor | tuple[t.Tensor, t.Tensor]:
     n: Annotated[int, "num_specialists"] = len(self.specialists)
     if isinstance(xs, t.Tensor):
       xs = [xs] * n
@@ -54,6 +59,8 @@ class Orchestrator(nn.Module):
     decoder_outs: list[HookState] = [HookState() for _ in range(n)]
     encoder_ins: list[HookState] = [HookState() for _ in range(n)]
     outputs = t.zeros((n, b, c), device=device)
+    if return_aux:
+      aux_logits = t.zeros((n, b, c), device=device)
 
     with ExitStack() as stack:
       # register encoder/decoder hooks
@@ -73,10 +80,15 @@ class Orchestrator(nn.Module):
           outputs[i] = s.driver.backbone(xs[i])
           
           # encode outgoing messages
-          encoder_outs[:, i] = s.encoder(encoder_ins[i].value)
+          enc = s.encoder(encoder_ins[i].value)
+          encoder_outs[:, i] = enc
+          if return_aux:
+            aux_logits[i] = self.aux_heads[i](enc)
 
         # run bus
         msgs, _ = self.bus(encoder_outs)
 
     logits: Annotated[t.Tensor, "b c"] = outputs.mean(dim=0)
+    if return_aux:
+      return logits, aux_logits
     return logits

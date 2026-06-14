@@ -3,18 +3,18 @@ from contextlib import ExitStack
 import torch as t
 import torch.nn as nn
 
-from driver import Driver
-from bus import Encoder, Decoder, Bus
-from hooks import hook_encoder, hook_decoder, HookState
+from modules.driver import Driver
+from modules.bus import Encoder, Decoder, Bus
+from modules.hooks import hook_encoder, hook_decoder, HookState
 
 from typing import Annotated
 
 class Specialist(nn.Module):
-  def __init__(self, driver: Driver, encoder: Encoder, decoder: Decoder):
+  def __init__(self, driver: Driver, decoder: Decoder, encoder: Encoder):
     super().__init__()
     self.driver = driver
-    self.encoder = encoder
     self.decoder = decoder
+    self.encoder = encoder
 
 
 class Orchestrator(nn.Module):
@@ -29,11 +29,13 @@ class Orchestrator(nn.Module):
   def train(self, mode: bool = True):
     super().train(mode)
     for s in self.specialists:
+      assert isinstance(s, Specialist)
       s.driver.backbone.eval() # keep frozen backbones in eval so batchnorm stats dont drift
     return self
 
   def _register_hooks(self, stack: ExitStack, decoder_outs: list[HookState], encoder_ins: list[HookState]):
     for i, s in enumerate(self.specialists):
+      assert isinstance(s.driver, Driver)
       stack.enter_context(hook_decoder(s.driver.early, decoder_outs[i]))
       stack.enter_context(hook_encoder(s.driver.late, encoder_ins[i]))
 
@@ -60,6 +62,8 @@ class Orchestrator(nn.Module):
         encoder_outs = t.zeros((b, n, d), device=device)
 
         for i, s in enumerate(self.specialists):
+          assert isinstance(s, Specialist)
+          
           # decode messages
           decoder_outs[i].value = s.decoder(msgs[:, i])
 

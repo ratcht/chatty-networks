@@ -27,8 +27,12 @@ class Decoder(nn.Module):
       nn.Linear(msg_dim, out_dim),
     )
     self.expand = expand
-    nn.init.zeros_(self.mlp[-1].weight)
-    nn.init.zeros_(self.mlp[-1].bias)
+
+    last_linear = self.mlp[-1]
+    assert isinstance(last_linear, nn.Linear)
+
+    nn.init.zeros_(last_linear.weight)
+    nn.init.zeros_(last_linear.bias)
 
   def forward(self, x):
     return self.expand(self.mlp(x))

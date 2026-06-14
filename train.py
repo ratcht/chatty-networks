@@ -29,7 +29,7 @@ class TrainJob:
 
 
 
-def train(job: TrainJob) -> list[float]:
+def train(job: TrainJob, *args, **kwargs) -> list[float]:
   cfg = job.config
   job.model.to(cfg.device)
   job.model.train()
@@ -41,7 +41,7 @@ def train(job: TrainJob) -> list[float]:
       for x, y in job.loader:
         x, y = x.to(cfg.device), y.to(cfg.device)
         job.optimizer.zero_grad()
-        logits = job.model(x)
+        logits = job.model(x, *args, **kwargs)
         loss = job.criterion(logits, y)
         loss.backward()
         job.optimizer.step()

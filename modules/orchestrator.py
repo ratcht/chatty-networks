@@ -39,8 +39,10 @@ class Orchestrator(nn.Module):
       stack.enter_context(hook_decoder(s.driver.early, decoder_outs[i]))
       stack.enter_context(hook_encoder(s.driver.late, encoder_ins[i]))
 
-  def forward(self, xs: list[t.Tensor], k_rounds: int) -> Annotated[t.Tensor, "b c"]:
+  def forward(self, xs: t.Tensor | list[t.Tensor], k_rounds: int = 1) -> Annotated[t.Tensor, "b c"]:
     n: Annotated[int, "num_specialists"] = len(self.specialists)
+    if isinstance(xs, t.Tensor):
+      xs = [xs] * n
     b: Annotated[int, "batch_size"] = xs[0].shape[0]
     d: Annotated[int, "msg_dim"] = self.msg_dim
     c: Annotated[int, "num_classes"] = self.num_classes

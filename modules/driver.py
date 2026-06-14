@@ -7,6 +7,8 @@ class Driver(nn.Module):
     self.backbone = backbone
     self.early = backbone.get_submodule(early)
     self.late = backbone.get_submodule(late)
-    # freeze backbone
-    for p in self.backbone.parameters():
+    # freeze the body, but keep the final classification head trainable
+    for name, p in self.backbone.named_parameters():
+      if name.startswith("fc."):
+        continue
       p.requires_grad_(False)

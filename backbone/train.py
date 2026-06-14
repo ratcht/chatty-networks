@@ -10,8 +10,8 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from backbone_generation.stratified_subsets import make_controlled_overlap_stratified_subsets
-from backbone_generation.resnet20 import ResNet20
+from backbone.stratified_subsets import make_controlled_overlap_stratified_subsets
+from backbone.resnet20 import ResNet20
 
 _CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
 _CIFAR100_STD = (0.2675, 0.2565, 0.2761)

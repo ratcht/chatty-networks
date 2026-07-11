@@ -30,20 +30,20 @@ class Agent(nn.Module):
   
   def forward(
     self,
-    w_t: Annotated[t.Tensor, "state_dim"],
-    c_t: Annotated[t.Tensor, "gru_input_dim"],
-    h_prev: Annotated[t.Tensor, "1, gru_hidden_dim"]
+    w_t: Annotated[t.Tensor, "B state_dim"],
+    c_t: Annotated[t.Tensor, "B gru_input_dim"],
+    h_prev: Annotated[t.Tensor, "1, B, gru_hidden_dim"]
   ) -> tuple[t.Tensor, t.Tensor, t.Tensor, t.Tensor, t.Tensor]:
     policy_input = self.state_encoder(w_t) + c_t
-    policy_input = policy_input.unsqueeze(0)  # (gru_hidden_dim,) -> (1, gru_input_dim)
+    policy_input = policy_input.unsqueeze(0)  # (n_agents, gru_input_dim) -> (1, n_agents, gru_input_dim)
 
     _, h_new = self.gru(policy_input, h_prev)
 
-    h = h_new.squeeze(0)  # (1, gru_hidden_dim,) -> (gru_hidden_dim,)
+    h = h_new.squeeze(0)  # (1, n_agents, gru_hidden_dim) -> (n_agents, gru_hidden_dim)
 
     Q_t = self.query_head(h)
     K_t = self.key_head(h)
     V_t = self.value_head(h)
     action_logits = self.action_head(h)
 
-    return Q_t, K_t, V_t, action_logits, h_new
+    return Q_t, K_t, V_t, action_logits, h

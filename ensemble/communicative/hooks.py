@@ -11,8 +11,10 @@ class HookState:
 
 @contextmanager
 def hook_decoder(layer: nn.Module, state: HookState):
-  # HookState is mutated across rounds
+  # HookState is mutated across rounds; None means no message yet (perception pass)
   def fn(_, inputs):
+    if state.value is None:
+      return
     return (inputs[0] + state.value,)
   handle = layer.register_forward_pre_hook(fn)
   try:

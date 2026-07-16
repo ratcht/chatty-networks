@@ -13,6 +13,7 @@ def evaluate(
   loader: DataLoader,
   device: str = "cuda",
   criterion: Optional[nn.Module] = None,
+  **model_kwargs,
 ) -> dict[str, float]:
   model.to(device)
   model.eval()
@@ -21,12 +22,12 @@ def evaluate(
   total_loss = 0.0
   for x, y in loader:
     x, y = x.to(device), y.to(device)
-    logits = model(x)
-    pred = logits.argmax(dim=-1)
+    out = model(x, **model_kwargs)
+    pred = out.argmax(dim=-1)
     correct += (pred == y).sum().item()
     total += y.size(0)
     if criterion is not None:
-      total_loss += criterion(logits, y).item() * y.size(0)
+      total_loss += criterion(out, y).item() * y.size(0)
   out = {"accuracy": correct / total}
   if criterion is not None:
     out["loss"] = total_loss / total

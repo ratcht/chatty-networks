@@ -1,3 +1,21 @@
+"""
+Train N ResNet20 backbones on the backbone split of the canonical 3-way split
+(made by splits/generate.py). Two generation methods:
+
+stratified - N stratified subsets of the backbone pool with controlled pairwise
+             overlap, one training run per member with its own seed.
+snapshot -  snapshot ensembling (Huang et al. 2017): one training run with a
+            cyclic cosine learning rate, saving a snapshot at each cycle end.
+
+Examples
+--------
+uv run python backbone/train.py stratified --seeds 42 137 \\
+    --frac 0.75 --overlap-frac 0.5
+
+uv run python backbone/train.py snapshot --seed 42 \\
+    --n-snapshots 10 --cycle-epochs 20
+"""
+
 import argparse
 import random
 import sys
@@ -10,7 +28,6 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from backbone.stratified_subsets import make_controlled_overlap_stratified_subsets
 from backbone.resnet20 import ResNet20
 
 _CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
@@ -38,29 +55,13 @@ def _worker_init_fn(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
-def make_train_val_indices(
-    data_root: str,
-    val_per_class: int = 100,
-    seed: int = 0,
-) -> tuple[list[int], list[int]]:
-    """Stratified split of the CIFAR-100 train set into 40k train / 10k val.
+def load_split(split_file: Path) -> tuple[list[int], list[int]]:
+    """Load the canonical 3-way split (made by splits/generate.py).
 
-    The split is fixed by `seed` and shared across all conditions and backbones
-    so every model validates against the same held-out examples.
+    Returns the backbone training pool and the shared validation indices.
     """
-    base_set = datasets.CIFAR100(data_root, train=True, download=True)
-    targets = np.array([t for _, t in base_set])
-    classes = np.unique(targets)
-    rng = np.random.default_rng(seed)
-
-    train_indices, val_indices = [], []
-    for cls in classes:
-        cls_idx = np.flatnonzero(targets == cls).copy()
-        rng.shuffle(cls_idx)
-        val_indices.extend(cls_idx[:val_per_class].tolist())
-        train_indices.extend(cls_idx[val_per_class:].tolist())
-
-    return train_indices, val_indices
+    split = torch.load(split_file, map_location="cpu", weights_only=True)
+    return split["backbone_indices"], split["val_indices"]
 
 
 def make_cifar100_loaders(
@@ -107,38 +108,23 @@ def make_cifar100_loaders(
     return train_loader, val_loader
 
 
-def train_backbone(
+def _train_epoch(
     model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    epochs: int,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
     device: str,
-) -> nn.Module:
-    model = model.to(device)
-    optimizer = torch.optim.SGD(
-        model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4
-    )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion = nn.CrossEntropyLoss()
-
-    for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad()
-            loss = criterion(model(x), y)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-        scheduler.step()
-
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            acc = _evaluate(model, val_loader, device)
-            avg_loss = running_loss / len(train_loader)
-            print(f"  epoch {epoch+1:>3}/{epochs}  loss {avg_loss:.4f}  val_acc {acc:.3f}")
-
-    return model
+) -> float:
+    model.train()
+    running_loss = 0.0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        loss = criterion(model(x), y)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+    return running_loss / len(loader)
 
 
 @torch.no_grad()
@@ -159,127 +145,251 @@ def _save(model: nn.Module, path: Path, metadata: dict) -> None:
     print(f"  saved → {path}")
 
 
-def _save_split(
-    train_indices: list[int],
-    val_indices: list[int],
-    split_seed: int,
-    output_dir: Path,
-) -> None:
-    path = output_dir / f"validation_split_seed{split_seed}.pt"
-    if path.exists():
-        return
-    output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({"train_indices": train_indices, "val_indices": val_indices, "split_seed": split_seed}, path)
-    print(f"  saved → {path}")
-
-
-def make_d0_pair(
-    seed1: int,
-    seed2: int,
-    split_seed: int,
+def train_backbone(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
     epochs: int,
     device: str,
-    data_root: str,
-    batch_size: int,
-    output_dir: Path,
-) -> None:
-    train_indices, val_indices = make_train_val_indices(data_root, seed=split_seed)
-    _save_split(train_indices, val_indices, split_seed, output_dir)
-    print(f"[split] train={len(train_indices)}  val={len(val_indices)}")
-
-    for seed in (seed1, seed2):
-        seeds = make_seeds(seed)
-        print(f"\n[D0] backbone seed={seed}  init_seed={seeds['init']}  loader_seed={seeds['loader']}")
-        seed_everything(seeds["init"])
-        model = ResNet20()
-        train_loader, val_loader = make_cifar100_loaders(
-            train_indices, val_indices, batch_size, seeds["loader"], data_root
-        )
-        train_backbone(model, train_loader, val_loader, epochs, device)
-        _save(
-            model,
-            output_dir / f"d0_backbone_seed{seed}_epoch{epochs}.pt",
-            {"condition": "d0", "seed": seed, "split_seed": split_seed, "epochs": epochs},
-        )
-
-
-def make_d1_pair(
-    seed1: int,
-    seed2: int,
-    overlap_frac: float,
-    split_seed: int,
-    epochs: int,
-    device: str,
-    data_root: str,
-    batch_size: int,
-    output_dir: Path,
-) -> None:
-    train_indices, val_indices = make_train_val_indices(data_root, seed=split_seed)
-    _save_split(train_indices, val_indices, split_seed, output_dir)
-    print(f"[split] train pool={len(train_indices)}  val={len(val_indices)}")
-
-    # Stratified subsets drawn from the 40k pool, not the full 50k
-    all_targets = np.array(datasets.CIFAR100(data_root, train=True, download=True).targets)
-    pool_targets = all_targets[train_indices]
-    pool_sub1, pool_sub2 = make_controlled_overlap_stratified_subsets(
-        pool_targets, frac=0.75, overlap_frac=overlap_frac, seed=seed1
+    lr: float = 0.1,
+) -> nn.Module:
+    model = model.to(device)
+    optimizer = torch.optim.SGD(
+        model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4
     )
-    # Remap pool-local indices back to absolute CIFAR-100 train indices
-    indices1 = [train_indices[i] for i in pool_sub1]
-    indices2 = [train_indices[i] for i in pool_sub2]
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    criterion = nn.CrossEntropyLoss()
 
-    actual_overlap = len(set(indices1) & set(indices2)) / len(train_indices)
-    print(f"[D1] overlap={actual_overlap:.3f} (requested {overlap_frac}), "
-          f"|subset1|={len(indices1)}  |subset2|={len(indices2)}")
+    for epoch in range(epochs):
+        avg_loss = _train_epoch(model, train_loader, optimizer, criterion, device)
+        scheduler.step()
 
-    for seed, indices in ((seed1, indices1), (seed2, indices2)):
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            acc = _evaluate(model, val_loader, device)
+            print(f"  epoch {epoch+1:>3}/{epochs}  loss {avg_loss:.4f}  val_acc {acc:.3f}")
+
+    return model
+
+
+# ---------------------------------------------------------------------------
+# stratified subsets + different seeds
+# ---------------------------------------------------------------------------
+
+def make_stratified_subsets(
+    targets,
+    n_subsets: int,
+    frac: float = 0.75,
+    overlap_frac: float = 0.60,
+    seed: int = 0,
+) -> list[list[int]]:
+    """
+    Create N stratified subsets with controlled pairwise per-class overlap.
+
+    Per class, a shared "core" of overlap_frac examples is given to every
+    subset, plus a disjoint unique chunk of (frac - overlap_frac) examples per
+    subset — so the overlap between any pair of subsets is exactly
+    overlap_frac of each class.
+
+    Args:
+        targets: list or array of integer class labels.
+        n_subsets: number of subsets (ensemble members).
+        frac: fraction of each class assigned to each subset.
+        overlap_frac: fraction of each class shared by all subsets.
+        seed: RNG seed.
+
+    Returns:
+        list of n_subsets index lists.
+
+    Constraints:
+        overlap_frac <= frac
+        overlap_frac >= (n_subsets * frac - 1) / (n_subsets - 1)
+
+    The second condition ensures each class has enough examples for the core
+    plus n_subsets disjoint unique chunks. For n_subsets=2 it reduces to
+    overlap_frac >= 2 * frac - 1.
+    """
+    if n_subsets < 2:
+        raise ValueError("n_subsets must be at least 2.")
+
+    if overlap_frac > frac:
+        raise ValueError("overlap_frac cannot exceed frac.")
+
+    min_overlap = max(0.0, (n_subsets * frac - 1.0) / (n_subsets - 1.0))
+    if overlap_frac < min_overlap:
+        raise ValueError(
+            f"overlap_frac is too small for {n_subsets} subsets of frac={frac}. "
+            f"Need overlap_frac >= {min_overlap:.3f}."
+        )
+
+    targets = np.asarray(targets)
+    classes = np.unique(targets)
+    rng = np.random.default_rng(seed)
+
+    subsets: list[list[int]] = [[] for _ in range(n_subsets)]
+
+    for cls in classes:
+        cls_indices = np.flatnonzero(targets == cls).copy()
+        rng.shuffle(cls_indices)
+
+        n_cls = len(cls_indices)
+        n_each = int(round(frac * n_cls))
+        n_overlap = int(round(overlap_frac * n_cls))
+        # clamp so rounding at the feasibility boundary can't overflow the class;
+        # subset sizes may come out one example short of frac * n_cls
+        n_unique = min(n_each - n_overlap, (n_cls - n_overlap) // n_subsets)
+
+        core = cls_indices[:n_overlap]
+        for i in range(n_subsets):
+            start = n_overlap + i * n_unique
+            unique = cls_indices[start:start + n_unique]
+            subsets[i].extend(np.concatenate([core, unique]).tolist())
+
+    for s in subsets:
+        rng.shuffle(s)
+
+    return subsets
+
+
+def train_stratified(args: argparse.Namespace) -> None:
+    pool, val_indices = load_split(args.split_file)
+    n = len(args.seeds)
+    print(f"[split] {args.split_file}  backbone pool={len(pool)}  val={len(val_indices)}")
+
+    if args.frac == 1.0:
+        # every member trains on the full pool; only the seeds differ
+        member_indices = [list(pool) for _ in range(n)]
+        print(f"[stratified] frac=1.0 → all {n} members share the full pool")
+    else:
+        # Stratified subsets drawn from the backbone pool, not the full 50k
+        all_targets = np.array(datasets.CIFAR100(args.data_root, train=True, download=True).targets)
+        pool_targets = all_targets[pool]
+        pool_subsets = make_stratified_subsets(
+            pool_targets, n_subsets=n, frac=args.frac,
+            overlap_frac=args.overlap_frac, seed=args.subset_seed,
+        )
+        # Remap pool-local indices back to absolute CIFAR-100 train indices
+        member_indices = [[pool[i] for i in sub] for sub in pool_subsets]
+
+        sets = [set(m) for m in member_indices]
+        overlaps = [
+            len(sets[i] & sets[j]) / len(pool)
+            for i in range(n) for j in range(i + 1, n)
+        ]
+        print(f"[stratified] n={n}  frac={args.frac}  "
+              f"pairwise overlap min={min(overlaps):.3f} max={max(overlaps):.3f} "
+              f"(requested {args.overlap_frac})  |subset|={len(member_indices[0])}")
+
+    for seed, indices in zip(args.seeds, member_indices):
         seeds = make_seeds(seed)
-        print(f"\n[D1] backbone seed={seed}  init_seed={seeds['init']}  loader_seed={seeds['loader']}")
+        print(f"\n[stratified] backbone seed={seed}  init_seed={seeds['init']}  loader_seed={seeds['loader']}")
         seed_everything(seeds["init"])
         model = ResNet20()
         train_loader, val_loader = make_cifar100_loaders(
-            indices, val_indices, batch_size, seeds["loader"], data_root
+            indices, val_indices, args.batch_size, seeds["loader"], args.data_root
         )
-        train_backbone(model, train_loader, val_loader, epochs, device)
+        train_backbone(model, train_loader, val_loader, args.epochs, args.device, lr=args.lr)
         _save(
             model,
-            output_dir / f"d1_backbone_seed{seed}_epoch{epochs}.pt",
+            args.output_dir / f"stratified_backbone_seed{seed}_epoch{args.epochs}.pt",
             {
-                "condition": "d1", "seed": seed, "split_seed": split_seed,
-                "overlap_frac": overlap_frac, "epochs": epochs,
+                "method": "stratified", "seed": seed, "split_file": str(args.split_file),
+                "frac": args.frac, "overlap_frac": args.overlap_frac,
+                "subset_seed": args.subset_seed, "epochs": args.epochs,
             },
         )
 
 
+# ---------------------------------------------------------------------------
+# snapshot ensembling (one run, cyclic cosine LR)
+# ---------------------------------------------------------------------------
+
+def train_snapshot(args: argparse.Namespace) -> None:
+    pool, val_indices = load_split(args.split_file)
+    print(f"[split] {args.split_file}  backbone pool={len(pool)}  val={len(val_indices)}")
+
+    n = args.n_snapshots
+    total_epochs = n * args.cycle_epochs
+    seeds = make_seeds(args.seed)
+    print(f"[snapshot] seed={args.seed}  {n} snapshots × {args.cycle_epochs} epochs "
+          f"= {total_epochs} epochs  init_seed={seeds['init']}  loader_seed={seeds['loader']}")
+
+    seed_everything(seeds["init"])
+    model = ResNet20().to(args.device)
+    train_loader, val_loader = make_cifar100_loaders(
+        pool, val_indices, args.batch_size, seeds["loader"], args.data_root
+    )
+
+    optimizer = torch.optim.SGD(
+        model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-4
+    )
+    # cyclic cosine: anneal to ~0 within each cycle, then warm-restart to lr
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=args.cycle_epochs, T_mult=1
+    )
+    criterion = nn.CrossEntropyLoss()
+
+    for epoch in range(total_epochs):
+        lr_now = optimizer.param_groups[0]["lr"]
+        avg_loss = _train_epoch(model, train_loader, optimizer, criterion, args.device)
+        scheduler.step()
+
+        cycle_end = (epoch + 1) % args.cycle_epochs == 0
+        if (epoch + 1) % 10 == 0 or epoch == 0 or cycle_end:
+            print(f"  epoch {epoch+1:>3}/{total_epochs}  lr {lr_now:.4f}  loss {avg_loss:.4f}")
+
+        if cycle_end:
+            k = (epoch + 1) // args.cycle_epochs
+            acc = _evaluate(model, val_loader, args.device)
+            print(f"  [snapshot {k}/{n}] val_acc {acc:.3f}")
+            _save(
+                model,
+                args.output_dir / f"snapshot_backbone_seed{args.seed}_snap{k}of{n}.pt",
+                {
+                    "method": "snapshot", "seed": args.seed, "split_file": str(args.split_file),
+                    "snapshot": k, "n_snapshots": n, "cycle_epochs": args.cycle_epochs,
+                    "epoch": epoch + 1, "val_acc": acc,
+                },
+            )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train ResNet20 backbone pairs for CIFAR-100 ensembles")
-    parser.add_argument("--condition", choices=["d0", "d1"], required=True)
-    parser.add_argument("--seed1", type=int, required=True)
-    parser.add_argument("--seed2", type=int, required=True)
-    parser.add_argument("--overlap-frac", type=float, default=0.5,
-                        help="D1 only: fraction of each class shared by both subsets (default: 0.5)")
-    parser.add_argument("--split-seed", type=int, default=0,
-                        help="Seed for the 40k/10k train/val split (default: 0)")
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--output-dir", type=Path, default=Path("backbone_generation/checkpoints"))
-    parser.add_argument("--data-root", type=str, default="data")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser = argparse.ArgumentParser(description="Train ResNet20 backbones for CIFAR-100 ensembles")
+    sub = parser.add_subparsers(dest="method", required=True)
+
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--split-file", type=Path, default=Path("splits/three_way_seed0.pt"),
+                        help="3-way split file made by splits/generate.py")
+    common.add_argument("--lr", type=float, default=0.1)
+    common.add_argument("--batch-size", type=int, default=128)
+    common.add_argument("--output-dir", type=Path, default=Path("backbone/checkpoints"))
+    common.add_argument("--data-root", type=str, default="data")
+    common.add_argument("--device", type=str, default="cuda")
+
+    p_strat = sub.add_parser("stratified", parents=[common],
+                             help="N stratified subsets + different seeds")
+    p_strat.add_argument("--seeds", type=int, nargs="+", required=True,
+                         help="One seed per ensemble member (N = number of seeds)")
+    p_strat.add_argument("--frac", type=float, default=0.75,
+                         help="Fraction of each class per subset; 1.0 = full pool for everyone")
+    p_strat.add_argument("--overlap-frac", type=float, default=0.5,
+                         help="Fraction of each class shared by all subsets")
+    p_strat.add_argument("--subset-seed", type=int, default=0,
+                         help="Seed for drawing the subsets (independent of member seeds)")
+    p_strat.add_argument("--epochs", type=int, default=200)
+
+    p_snap = sub.add_parser("snapshot", parents=[common],
+                            help="Snapshot ensemble: one run, cyclic cosine LR")
+    p_snap.add_argument("--seed", type=int, required=True)
+    p_snap.add_argument("--n-snapshots", type=int, required=True)
+    p_snap.add_argument("--cycle-epochs", type=int, default=20,
+                        help="Epochs per LR cycle (total = n_snapshots × cycle_epochs)")
+
     args = parser.parse_args()
 
-    print(f"condition={args.condition}  seed1={args.seed1}  seed2={args.seed2}  "
-          f"epochs={args.epochs}  device={args.device}")
-
-    if args.condition == "d0":
-        make_d0_pair(
-            args.seed1, args.seed2, args.split_seed, args.epochs, args.device,
-            args.data_root, args.batch_size, args.output_dir,
-        )
+    if args.method == "stratified":
+        train_stratified(args)
     else:
-        make_d1_pair(
-            args.seed1, args.seed2, args.overlap_frac, args.split_seed, args.epochs,
-            args.device, args.data_root, args.batch_size, args.output_dir,
-        )
+        train_snapshot(args)
 
 
 if __name__ == "__main__":

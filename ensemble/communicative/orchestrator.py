@@ -49,7 +49,7 @@ class Orchestrator(nn.Module):
       stack.enter_context(hook_decoder(s.driver.early, decoder_outs[i]))
       stack.enter_context(hook_encoder(s.driver.late, encoder_ins[i]))
 
-  def forward(self, xs: t.Tensor | list[t.Tensor], k_rounds: int = 1) -> t.Tensor:
+  def forward(self, xs: t.Tensor | list[t.Tensor], k_rounds: int = 1, capture: dict | None = None) -> t.Tensor:
     n: Annotated[int, "num_specialists"] = len(self.specialists)
     if isinstance(xs, t.Tensor):
       xs = [xs] * n
@@ -77,10 +77,19 @@ class Orchestrator(nn.Module):
         K = t.zeros((b, n, self.key_dim), device=device)
         V = t.zeros((b, n, self.value_dim), device=device)
 
+        fs = []
         for i, s in enumerate(self.specialists):
           assert isinstance(s, Specialist)
           outputs[i] = s.driver.backbone(xs[i])
           Q[:, i], K[:, i], V[:, i] = s.encoder(encoder_ins[i].value)
+          if capture is not None:
+            fs.append(s.encoder.reduce(encoder_ins[i].value))
+
+        if capture is not None:
+          capture.setdefault("f", []).append(t.stack(fs, dim=1).detach())
+          capture.setdefault("V", []).append(V.detach())
+          # outputs is a buffer reused across rounds, so clone
+          capture.setdefault("logits", []).append(outputs.detach().clone())
 
         if round_idx == k_rounds:
           break
@@ -91,8 +100,15 @@ class Orchestrator(nn.Module):
 
         # aggregate messages and stage them for injection on the next pass
         c, _ = self.bus(Q, K, V)
+        msgs = []
         for i, s in enumerate(self.specialists):
-          decoder_outs[i].value = s.decoder(c[:, i])
+          assert isinstance(s, Specialist)
+          msgs.append(s.decoder(c[:, i]))
+          decoder_outs[i].value = msgs[-1]
+
+        if capture is not None:
+          capture.setdefault("c", []).append(c.detach())
+          capture.setdefault("msg", []).append(t.stack(msgs, dim=1).detach())
 
         # mean L2 norms of what is said, what is heard, and what is injected —
         # a collapse toward zero here means the continuous messages vanished

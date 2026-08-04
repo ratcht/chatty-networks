@@ -90,6 +90,7 @@ requests==2.34.0
 RestrictedPython==8.1
 ruff==0.15.17
 s3transfer==0.17.0
+scikit-learn==1.9.0
 scipy==1.17.1
 six==1.17.0
 SQLAlchemy==2.0.49

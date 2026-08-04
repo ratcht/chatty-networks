@@ -291,6 +291,7 @@ def make_loaders(
   split_file: Path,
   batch_size: int,
   data_root: str,
+  augment: bool = True,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
   train_tf = transforms.Compose([
     transforms.RandomHorizontalFlip(),
@@ -301,6 +302,8 @@ def make_loaders(
     transforms.ToTensor(),
     transforms.Normalize(_CIFAR100_MEAN, _CIFAR100_STD),
   ])
+  if not augment:
+    train_tf = eval_tf
 
   split = torch.load(split_file, weights_only=True)
   train_set = datasets.CIFAR100(data_root, train=True, transform=train_tf, download=True)

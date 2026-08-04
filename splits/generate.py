@@ -1,5 +1,6 @@
 """
-Generate the canonical 3-way split of the CIFAR-100 train set.
+Generate the canonical 3-way split of the CIFAR-100 train set, plus the seed
+lists the rest of the pipeline runs on.
 
 The 50k training examples are partitioned into:
   backbone_indices  — backbone training pool
@@ -9,10 +10,20 @@ The 50k training examples are partitioned into:
 The official 10k CIFAR-100 test set is never touched here; it is the test set
 for all downstream evaluation.
 
+Alongside the partition this records two seed lists, both derived from the
+single master --seed so the whole pipeline is reproducible from one number:
+
+  expert_seeds  — one per snapshot-ensemble trajectory (stage 2, the expert
+                  pool). N_1 trajectories x M snapshots = the candidate pool
+                  that selection later picks a group from.
+  joint_seeds   — one per replicate of a joint-ensemble config (stage 4),
+                  used to average a result over seeds rather than trust one.
+
 Example
 -------
 uv run python splits/generate.py --seed 0
 uv run python splits/generate.py --seed 1 --fracs 0.7 0.2 0.1
+uv run python splits/generate.py --seed 0 --n-expert-seeds 10 --n-joint-seeds 5
 """
 
 import argparse
@@ -56,9 +67,32 @@ def make_three_way_split(
     }
 
 
+# Distinct stream ids so each seed list is drawn from its own RNG, independent
+# of the partition's. Changing --n-expert-seeds can then never perturb the
+# partition, and never perturbs the joint seeds either.
+_EXPERT_STREAM = 1
+_JOINT_STREAM = 2
+
+
+def derive_seeds(master_seed: int, n: int, stream: int) -> list[int]:
+    """Draw n child seeds from a stream keyed by (master_seed, stream).
+
+    Drawn sequentially, so the list grows by appending: regenerating with a
+    larger n leaves the earlier seeds untouched. That matters because those
+    seeds label trajectories that may already have cost hours to train — a
+    seed list that reshuffled when extended would silently orphan them.
+    """
+    rng = np.random.default_rng([master_seed, stream])
+    return [int(s) for s in rng.integers(0, 2**31, size=n)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate the 3-way CIFAR-100 train split")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--n-expert-seeds", type=int, default=10,
+                        help="N_1: snapshot-ensemble trajectories to generate (default: %(default)s)")
+    parser.add_argument("--n-joint-seeds", type=int, default=5,
+                        help="N_2: seed replicates per joint-ensemble config (default: %(default)s)")
     parser.add_argument("--fracs", type=float, nargs=3, default=[0.5, 0.4, 0.1],
                         metavar=("BACKBONE", "ENSEMBLE", "VAL"),
                         help="Fractions per class (default: %(default)s)")
@@ -83,6 +117,9 @@ def main() -> None:
     assert all(len(o) == 0 for o in overlap), "subsets must be disjoint"
     assert sum(sizes.values()) == len(targets), "subsets must cover the train set"
 
+    expert_seeds = derive_seeds(args.seed, args.n_expert_seeds, _EXPERT_STREAM)
+    joint_seeds = derive_seeds(args.seed, args.n_joint_seeds, _JOINT_STREAM)
+
     out = args.output or _REPO_ROOT / "splits" / f"three_way_seed{args.seed}.pt"
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -90,6 +127,8 @@ def main() -> None:
             **split,
             "seed": args.seed,
             "fracs": {"backbone": fracs[0], "ensemble": fracs[1], "val": fracs[2]},
+            "expert_seeds": expert_seeds,
+            "joint_seeds": joint_seeds,
             "source": "cifar100_train",
             "test_set": "cifar100_test (official 10k, untouched)",
             "created": date.today().isoformat(),
@@ -97,6 +136,8 @@ def main() -> None:
         out,
     )
     print(f"saved → {out}  sizes={sizes}")
+    print(f"  expert_seeds (N_1={len(expert_seeds)}): {expert_seeds}")
+    print(f"  joint_seeds  (N_2={len(joint_seeds)}): {joint_seeds}")
 
 
 if __name__ == "__main__":

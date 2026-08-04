@@ -33,7 +33,7 @@ from tqdm.auto import tqdm
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from backbone.resnet20 import ResNet20
+from backbone.resnet import ResNet
 from ensemble.communicative.driver import Driver
 from ensemble.communicative.bus import QKVEncoder, Decoder
 from ensemble.communicative.orchestrator import Specialist, Orchestrator
@@ -326,9 +326,12 @@ def make_loaders(
 # Method: communicative (TarMAC-aligned)
 # ---------------------------------------------------------------------------
 
-def _load_backbone(path: Path, device: str) -> ResNet20:
+def _load_backbone(path: Path, device: str) -> ResNet:
   ckpt = torch.load(path, map_location=device, weights_only=True)
-  model = ResNet20().to(device)
+  # depth comes from the checkpoint so a pool of any CIFAR ResNet loads; older
+  # checkpoints predate the field and are all ResNet-20
+  depth = ckpt.get("metadata", {}).get("depth", 20)
+  model = ResNet(depth=depth).to(device)
   model.load_state_dict(ckpt["state_dict"])
   model.eval()
   return model

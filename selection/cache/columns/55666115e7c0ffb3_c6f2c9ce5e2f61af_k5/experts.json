@@ -1,0 +1,452 @@
+[
+  {
+    "index": 0,
+    "path": "backbone/checkpoints/pool/resnet110_seed528192194_snap1of5.pt",
+    "digest": "e8662fbaa0bdc652",
+    "seed": 528192194,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.588
+  },
+  {
+    "index": 1,
+    "path": "backbone/checkpoints/pool/resnet110_seed528192194_snap2of5.pt",
+    "digest": "3d8ab1e2828aa7f8",
+    "seed": 528192194,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.613
+  },
+  {
+    "index": 2,
+    "path": "backbone/checkpoints/pool/resnet110_seed528192194_snap3of5.pt",
+    "digest": "dc44f83b660ca4c5",
+    "seed": 528192194,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6224
+  },
+  {
+    "index": 3,
+    "path": "backbone/checkpoints/pool/resnet110_seed528192194_snap4of5.pt",
+    "digest": "dcc27f60dd2721d9",
+    "seed": 528192194,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.6348
+  },
+  {
+    "index": 4,
+    "path": "backbone/checkpoints/pool/resnet110_seed528192194_snap5of5.pt",
+    "digest": "cf674e3510d9968c",
+    "seed": 528192194,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.637
+  },
+  {
+    "index": 5,
+    "path": "backbone/checkpoints/pool/resnet110_seed868498938_snap1of5.pt",
+    "digest": "218728af22710f36",
+    "seed": 868498938,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5978
+  },
+  {
+    "index": 6,
+    "path": "backbone/checkpoints/pool/resnet110_seed868498938_snap2of5.pt",
+    "digest": "bc1c1d0659219bf6",
+    "seed": 868498938,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6196
+  },
+  {
+    "index": 7,
+    "path": "backbone/checkpoints/pool/resnet110_seed868498938_snap3of5.pt",
+    "digest": "2c3fee23c263afda",
+    "seed": 868498938,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6316
+  },
+  {
+    "index": 8,
+    "path": "backbone/checkpoints/pool/resnet110_seed868498938_snap4of5.pt",
+    "digest": "d0895b972467e681",
+    "seed": 868498938,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.641
+  },
+  {
+    "index": 9,
+    "path": "backbone/checkpoints/pool/resnet110_seed868498938_snap5of5.pt",
+    "digest": "829784c3ff65f9f2",
+    "seed": 868498938,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6392
+  },
+  {
+    "index": 10,
+    "path": "backbone/checkpoints/pool/resnet110_seed965090079_snap1of5.pt",
+    "digest": "1be0ea900c2cc283",
+    "seed": 965090079,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.6016
+  },
+  {
+    "index": 11,
+    "path": "backbone/checkpoints/pool/resnet110_seed965090079_snap2of5.pt",
+    "digest": "d3c4512982e5508e",
+    "seed": 965090079,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6214
+  },
+  {
+    "index": 12,
+    "path": "backbone/checkpoints/pool/resnet110_seed965090079_snap3of5.pt",
+    "digest": "83d5236282fa0e0e",
+    "seed": 965090079,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.636
+  },
+  {
+    "index": 13,
+    "path": "backbone/checkpoints/pool/resnet110_seed965090079_snap4of5.pt",
+    "digest": "9daafff952532cfb",
+    "seed": 965090079,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.6434
+  },
+  {
+    "index": 14,
+    "path": "backbone/checkpoints/pool/resnet110_seed965090079_snap5of5.pt",
+    "digest": "c23a878802c39159",
+    "seed": 965090079,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6476
+  },
+  {
+    "index": 15,
+    "path": "backbone/checkpoints/pool/resnet110_seed1358831404_snap1of5.pt",
+    "digest": "c51265fe700c3dca",
+    "seed": 1358831404,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.59
+  },
+  {
+    "index": 16,
+    "path": "backbone/checkpoints/pool/resnet110_seed1358831404_snap2of5.pt",
+    "digest": "0f40661c4d8fb8e3",
+    "seed": 1358831404,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6142
+  },
+  {
+    "index": 17,
+    "path": "backbone/checkpoints/pool/resnet110_seed1358831404_snap3of5.pt",
+    "digest": "d5c1ce448332201f",
+    "seed": 1358831404,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6236
+  },
+  {
+    "index": 18,
+    "path": "backbone/checkpoints/pool/resnet110_seed1358831404_snap4of5.pt",
+    "digest": "4e11b6d062e66915",
+    "seed": 1358831404,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.6372
+  },
+  {
+    "index": 19,
+    "path": "backbone/checkpoints/pool/resnet110_seed1358831404_snap5of5.pt",
+    "digest": "41427ea584d7251c",
+    "seed": 1358831404,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6396
+  },
+  {
+    "index": 20,
+    "path": "backbone/checkpoints/pool/resnet110_seed1370068126_snap1of5.pt",
+    "digest": "d16a16c99e80e782",
+    "seed": 1370068126,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5906
+  },
+  {
+    "index": 21,
+    "path": "backbone/checkpoints/pool/resnet110_seed1370068126_snap2of5.pt",
+    "digest": "7db84ef01d629e20",
+    "seed": 1370068126,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6188
+  },
+  {
+    "index": 22,
+    "path": "backbone/checkpoints/pool/resnet110_seed1370068126_snap3of5.pt",
+    "digest": "a5d697c2ca861773",
+    "seed": 1370068126,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.629
+  },
+  {
+    "index": 23,
+    "path": "backbone/checkpoints/pool/resnet110_seed1370068126_snap4of5.pt",
+    "digest": "dd95cfb52aba8cdb",
+    "seed": 1370068126,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.632
+  },
+  {
+    "index": 24,
+    "path": "backbone/checkpoints/pool/resnet110_seed1370068126_snap5of5.pt",
+    "digest": "e77d804b98a18b8e",
+    "seed": 1370068126,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6366
+  },
+  {
+    "index": 25,
+    "path": "backbone/checkpoints/pool/resnet110_seed1704034045_snap1of5.pt",
+    "digest": "3816fbd6633fac00",
+    "seed": 1704034045,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5828
+  },
+  {
+    "index": 26,
+    "path": "backbone/checkpoints/pool/resnet110_seed1704034045_snap2of5.pt",
+    "digest": "ac4ded0e94913d73",
+    "seed": 1704034045,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6154
+  },
+  {
+    "index": 27,
+    "path": "backbone/checkpoints/pool/resnet110_seed1704034045_snap3of5.pt",
+    "digest": "c8dbfca67dfcdd06",
+    "seed": 1704034045,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6226
+  },
+  {
+    "index": 28,
+    "path": "backbone/checkpoints/pool/resnet110_seed1704034045_snap4of5.pt",
+    "digest": "a40bc80187e8a7bc",
+    "seed": 1704034045,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.627
+  },
+  {
+    "index": 29,
+    "path": "backbone/checkpoints/pool/resnet110_seed1704034045_snap5of5.pt",
+    "digest": "ce7cc04cb0fc5e0d",
+    "seed": 1704034045,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6322
+  },
+  {
+    "index": 30,
+    "path": "backbone/checkpoints/pool/resnet110_seed1752763709_snap1of5.pt",
+    "digest": "ff777cf847b36a36",
+    "seed": 1752763709,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5948
+  },
+  {
+    "index": 31,
+    "path": "backbone/checkpoints/pool/resnet110_seed1752763709_snap2of5.pt",
+    "digest": "fe37c7a42770245c",
+    "seed": 1752763709,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6124
+  },
+  {
+    "index": 32,
+    "path": "backbone/checkpoints/pool/resnet110_seed1752763709_snap3of5.pt",
+    "digest": "f1c1d607213a6128",
+    "seed": 1752763709,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6224
+  },
+  {
+    "index": 33,
+    "path": "backbone/checkpoints/pool/resnet110_seed1752763709_snap4of5.pt",
+    "digest": "1a226386b682ef6e",
+    "seed": 1752763709,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.6282
+  },
+  {
+    "index": 34,
+    "path": "backbone/checkpoints/pool/resnet110_seed1752763709_snap5of5.pt",
+    "digest": "18c615c8c0ed0d09",
+    "seed": 1752763709,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6316
+  },
+  {
+    "index": 35,
+    "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap1of5.pt",
+    "digest": "5bf628cd8cf27ef9",
+    "seed": 1766788445,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5864
+  },
+  {
+    "index": 36,
+    "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap2of5.pt",
+    "digest": "fb49b7977dab416f",
+    "seed": 1766788445,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6222
+  },
+  {
+    "index": 37,
+    "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap3of5.pt",
+    "digest": "9e723b93fd8df64a",
+    "seed": 1766788445,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6302
+  },
+  {
+    "index": 38,
+    "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap4of5.pt",
+    "digest": "63b79e7f93608ac6",
+    "seed": 1766788445,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.6358
+  },
+  {
+    "index": 39,
+    "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap5of5.pt",
+    "digest": "d32104fabea6a2e1",
+    "seed": 1766788445,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6394
+  },
+  {
+    "index": 40,
+    "path": "backbone/checkpoints/pool/resnet110_seed1938359165_snap1of5.pt",
+    "digest": "1079c9afcd884461",
+    "seed": 1938359165,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5878
+  },
+  {
+    "index": 41,
+    "path": "backbone/checkpoints/pool/resnet110_seed1938359165_snap2of5.pt",
+    "digest": "523ec0140363e3bc",
+    "seed": 1938359165,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.6156
+  },
+  {
+    "index": 42,
+    "path": "backbone/checkpoints/pool/resnet110_seed1938359165_snap3of5.pt",
+    "digest": "1d807058178a08c4",
+    "seed": 1938359165,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6224
+  },
+  {
+    "index": 43,
+    "path": "backbone/checkpoints/pool/resnet110_seed1938359165_snap4of5.pt",
+    "digest": "dccbf7c70d4cad90",
+    "seed": 1938359165,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.63
+  },
+  {
+    "index": 44,
+    "path": "backbone/checkpoints/pool/resnet110_seed1938359165_snap5of5.pt",
+    "digest": "b7dc221705b8b428",
+    "seed": 1938359165,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6388
+  },
+  {
+    "index": 45,
+    "path": "backbone/checkpoints/pool/resnet110_seed1975775579_snap1of5.pt",
+    "digest": "a10442e7b578922a",
+    "seed": 1975775579,
+    "snapshot": 1,
+    "depth": 110,
+    "val_acc": 0.5916
+  },
+  {
+    "index": 46,
+    "path": "backbone/checkpoints/pool/resnet110_seed1975775579_snap2of5.pt",
+    "digest": "0f1965e7e5e23632",
+    "seed": 1975775579,
+    "snapshot": 2,
+    "depth": 110,
+    "val_acc": 0.613
+  },
+  {
+    "index": 47,
+    "path": "backbone/checkpoints/pool/resnet110_seed1975775579_snap3of5.pt",
+    "digest": "196abecd822008df",
+    "seed": 1975775579,
+    "snapshot": 3,
+    "depth": 110,
+    "val_acc": 0.6294
+  },
+  {
+    "index": 48,
+    "path": "backbone/checkpoints/pool/resnet110_seed1975775579_snap4of5.pt",
+    "digest": "a4674dde039c3093",
+    "seed": 1975775579,
+    "snapshot": 4,
+    "depth": 110,
+    "val_acc": 0.6344
+  },
+  {
+    "index": 49,
+    "path": "backbone/checkpoints/pool/resnet110_seed1975775579_snap5of5.pt",
+    "digest": "8454ab126900ee66",
+    "seed": 1975775579,
+    "snapshot": 5,
+    "depth": 110,
+    "val_acc": 0.6434
+  }
+]

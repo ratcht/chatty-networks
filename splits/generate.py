@@ -27,6 +27,7 @@ uv run python splits/generate.py --seed 0 --n-expert-seeds 10 --n-joint-seeds 5
 """
 
 import argparse
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -84,6 +85,31 @@ def derive_seeds(master_seed: int, n: int, stream: int) -> list[int]:
     """
     rng = np.random.default_rng([master_seed, stream])
     return [int(s) for s in rng.integers(0, 2**31, size=n)]
+
+
+def read_seeds(split_file: Path, key: str) -> tuple[list[int], str]:
+    """Return a named seed list from a split file, plus a digest of the partition.
+
+    The digest matters because this module writes in place: bumping
+    --n-expert-seeds or --n-joint-seeds rewrites the same path, and so does
+    changing --fracs. The path alone can't tell those apart, so a
+    repartitioned split would sail past a downstream config guard undetected.
+
+    Shared by scripts/generate_pool.py (key="expert_seeds") and
+    scripts/replicate_joint.py (key="joint_seeds") — same split file, two
+    independent seed streams (see _EXPERT_STREAM/_JOINT_STREAM above).
+    """
+    split = torch.load(split_file, map_location="cpu", weights_only=True)
+    seeds = split.get(key)
+    if not seeds:
+        raise SystemExit(
+            f"{split_file} has no {key} — it predates seed lists. "
+            f"Regenerate it: uv run python splits/generate.py --seed {split.get('seed', 0)}"
+        )
+    h = hashlib.sha256()
+    for idx_key in ("backbone_indices", "ensemble_indices", "val_indices"):
+        h.update(np.asarray(split[idx_key], dtype=np.int64).tobytes())
+    return [int(s) for s in seeds], h.hexdigest()[:16]
 
 
 def main() -> None:

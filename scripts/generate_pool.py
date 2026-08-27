@@ -21,7 +21,6 @@ uv run python scripts/generate_pool.py --limit 2      # first 2 seeds only
 """
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -30,12 +29,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-import torch
-
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 from backbone.train import snapshot_filename
+from splits.generate import read_seeds
 
 _STATE_VERSION = 1
 
@@ -47,27 +44,6 @@ _TRAIN_FLAGS = ("depth", "n_snapshots", "cycle_epochs", "lr", "batch_size")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def read_split(split_file: Path) -> tuple[list[int], str]:
-    """Return the expert seeds and a digest of the partition itself.
-
-    The digest matters because splits/generate.py writes in place: bumping
-    --n-expert-seeds rewrites the same path, and so does changing --fracs. The
-    path alone can't tell those apart, so a repartitioned split would sail past
-    the config guard and get half a pool trained on different data.
-    """
-    split = torch.load(split_file, map_location="cpu", weights_only=True)
-    seeds = split.get("expert_seeds")
-    if not seeds:
-        raise SystemExit(
-            f"{split_file} has no expert_seeds — it predates seed lists. "
-            f"Regenerate it: uv run python splits/generate.py --seed {split.get('seed', 0)}"
-        )
-    h = hashlib.sha256()
-    for key in ("backbone_indices", "ensemble_indices", "val_indices"):
-        h.update(np.asarray(split[key], dtype=np.int64).tobytes())
-    return [int(s) for s in seeds], h.hexdigest()[:16]
 
 
 def config_fingerprint(args: argparse.Namespace, split_digest: str) -> dict:
@@ -150,7 +126,7 @@ def main() -> None:
     args.split_file = (_REPO_ROOT / args.split_file).resolve()
     state_file = args.state_file or args.output_dir / "pool_state.json"
 
-    expert_seeds, digest = read_split(args.split_file)
+    expert_seeds, digest = read_seeds(args.split_file, "expert_seeds")
     seeds = args.seeds or expert_seeds
     if args.seeds:
         print("[pool] warning: --seeds overrides the split file's expert seeds, so this "

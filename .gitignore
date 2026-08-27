@@ -2,4 +2,4 @@
 .aim/**
 **/__pycache__/**
 data/**
-.ruff_cache/**
+site/**

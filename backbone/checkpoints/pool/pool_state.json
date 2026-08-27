@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "config": {
+    "depth": 110,
+    "n_snapshots": 5,
+    "cycle_epochs": 40,
+    "lr": 0.1,
+    "batch_size": 128,
+    "split_file": "/home/john/Desktop/Grad Code/chatty-networks/splits/three_way_seed42.pt",
+    "split_digest": "c6f2c9ce5e2f61af"
+  },
+  "seeds": {
+    "1370068126": {
+      "status": "done",
+      "finished": "2026-07-31T22:31:22+00:00",
+      "elapsed_sec": 5841.7
+    },
+    "1704034045": {
+      "status": "done",
+      "finished": "2026-08-01T20:20:57+00:00",
+      "elapsed_sec": 5998.8
+    },
+    "965090079": {
+      "status": "done",
+      "finished": "2026-08-01T22:01:04+00:00",
+      "elapsed_sec": 6006.6
+    },
+    "528192194": {
+      "status": "done",
+      "finished": "2026-08-02T02:32:03+00:00",
+      "elapsed_sec": 10935.6
+    },
+    "1975775579": {
+      "status": "done",
+      "finished": "2026-08-02T21:38:04+00:00",
+      "elapsed_sec": 10851.0
+    },
+    "868498938": {
+      "status": "done",
+      "finished": "2026-08-03T03:11:02+00:00",
+      "elapsed_sec": 10438.0
+    },
+    "1766788445": {
+      "status": "done",
+      "finished": "2026-08-03T21:25:31+00:00",
+      "elapsed_sec": 6313.3
+    },
+    "1358831404": {
+      "status": "done",
+      "finished": "2026-08-03T23:03:05+00:00",
+      "elapsed_sec": 5854.4
+    },
+    "1938359165": {
+      "status": "done",
+      "finished": "2026-08-04T00:42:15+00:00",
+      "elapsed_sec": 5949.6
+    },
+    "1752763709": {
+      "status": "done",
+      "finished": "2026-08-04T02:21:15+00:00",
+      "elapsed_sec": 5940.8
+    }
+  }
+}

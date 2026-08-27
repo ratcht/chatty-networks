@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "metrics": {
+    "oracle": {
+      "version": 1,
+      "computed_at": "2026-08-04T21:31:36+00:00"
+    },
+    "shared": {
+      "version": 1,
+      "computed_at": "2026-08-04T21:31:36+00:00"
+    },
+    "bagging": {
+      "version": 1,
+      "computed_at": "2026-08-04T21:31:36+00:00"
+    },
+    "oracle_minus_shared": {
+      "version": 1,
+      "computed_at": "2026-08-04T21:31:36+00:00"
+    },
+    "oracle_minus_bagging": {
+      "version": 1,
+      "computed_at": "2026-08-04T21:31:36+00:00"
+    }
+  },
+  "n_combinations": 2118760,
+  "n_val": 5000,
+  "k": 5
+}

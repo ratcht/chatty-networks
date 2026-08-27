@@ -6,41 +6,65 @@ Methods (one subcommand each; gating will join later):
 communicative — TarMAC-aligned ensemble: per-specialist Q/K/V heads, bare
                 attention bus, decoder injection via hooks.
 
+A `summarize` subcommand aggregates a group of same-config, different-seed
+replicate runs (produced by scripts/replicate_joint.py) into one summary run.
+
 Example
 -------
 uv run python ensemble/train.py communicative \\
-    --backbones backbone/checkpoints/stratified_backbone_seed42_epoch200.pt \\
-                backbone/checkpoints/stratified_backbone_seed137_epoch200.pt \\
+    --manifest selection/manifests/high_gap.json \\
     --split-file splits/three_way_seed0.pt \\
     --epochs 10 --k-rounds 1
 """
 
 import argparse
+import json
+import random
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
-from aim import Run
+from aim import Repo, Run
 from tqdm.auto import tqdm
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from backbone.resnet20 import ResNet20
+from backbone.resnet import ResNet
 from ensemble.communicative.driver import Driver
 from ensemble.communicative.bus import QKVEncoder, Decoder
 from ensemble.communicative.orchestrator import Specialist, Orchestrator
 from ensemble.eval import evaluate
+from ensemble import metric_docs
 
 _CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
 _CIFAR100_STD = (0.2675, 0.2565, 0.2761)
+
+
+def seed_everything(seed: int, deterministic: bool) -> None:
+  """Seed every RNG a training run can touch, including ones nothing uses yet.
+
+  cudnn is the one that matters most here: left alone it's free to pick a
+  different conv algorithm run-to-run even at a fixed seed, which on a
+  54-block ResNet-110 stack is a second, unseeded source of variance sitting
+  on top of the joint-training seed this whole replicate study exists to
+  isolate. deterministic=False trades that guarantee for cudnn's autotuned
+  (usually faster) kernels.
+  """
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  torch.cuda.manual_seed_all(seed)
+  torch.backends.cudnn.deterministic = deterministic
+  torch.backends.cudnn.benchmark = not deterministic
 
 
 @dataclass
@@ -326,12 +350,71 @@ def make_loaders(
 # Method: communicative (TarMAC-aligned)
 # ---------------------------------------------------------------------------
 
-def _load_backbone(path: Path, device: str) -> ResNet20:
+def _load_backbone(path: Path, device: str) -> ResNet:
   ckpt = torch.load(path, map_location=device, weights_only=True)
-  model = ResNet20().to(device)
+  # depth comes from the checkpoint so a pool of any CIFAR ResNet loads; older
+  # checkpoints predate the field and are all ResNet-20
+  depth = ckpt.get("metadata", {}).get("depth", 20)
+  model = ResNet(depth=depth).to(device)
   model.load_state_dict(ckpt["state_dict"])
   model.eval()
   return model
+
+
+@dataclass
+class SpecialistSpec:
+  """One specialist's construction config: which backbone, which layer it
+  reads from/injects into, which head implementations to use.
+
+  early/late and encoder/decoder are legitimately per-specialist — each is
+  internal to one specialist's own backbone/heads. key_dim/value_dim are NOT
+  here: Orchestrator.forward stacks every specialist's Q/K/V into single
+  (b, n, key_dim)/(b, n, value_dim) tensors, so every specialist's encoder
+  must project into the same dimensionality — that stays an
+  Orchestrator-level setting, passed separately to build_communicative.
+  """
+  backbone_path: Path
+  early: str
+  late: str
+  encoder: str = "qkv"
+  decoder: str = "mlp"
+
+
+# Swappable head implementations, keyed by the name SpecialistSpec.encoder /
+# .decoder refers to. Additive only: a new head architecture is added by
+# registering a class here, never by editing build_communicative.
+ENCODERS: dict[str, type] = {"qkv": QKVEncoder}
+DECODERS: dict[str, type] = {"mlp": Decoder}
+
+
+def resolve_specialist_specs(
+  backbone_paths: list[Path],
+  defaults: argparse.Namespace,
+  overrides_path: Optional[Path],
+) -> list[SpecialistSpec]:
+  """Build one SpecialistSpec per backbone, in order.
+
+  overrides_path is a sparse dict keyed by *position* in backbone_paths (not
+  by backbone path — architecture is identical across the pool, so position
+  is simpler and needs no index-alignment with a second file), e.g.
+  {"1": {"early": "layer1.1"}}. Only positions that differ from the
+  CLI-level homogeneous defaults (defaults.early/late) need an entry.
+  """
+  overrides: dict[str, dict] = {}
+  if overrides_path is not None:
+    overrides = json.loads(overrides_path.read_text())
+
+  specs = []
+  for i, path in enumerate(backbone_paths):
+    o = overrides.get(str(i), {})
+    specs.append(SpecialistSpec(
+      backbone_path=path,
+      early=o.get("early", defaults.early),
+      late=o.get("late", defaults.late),
+      encoder=o.get("encoder", "qkv"),
+      decoder=o.get("decoder", "mlp"),
+    ))
+  return specs
 
 
 @torch.no_grad()
@@ -351,9 +434,7 @@ def _adapter_dims(backbone: nn.Module, early: str, late: str, device: str) -> tu
 
 
 def build_communicative(
-  backbone_paths: list[Path],
-  early: str,
-  late: str,
+  specs: list[SpecialistSpec],
   key_dim: int,
   value_dim: int,
   num_classes: int,
@@ -361,18 +442,78 @@ def build_communicative(
 ) -> Orchestrator:
   from einops.layers.torch import Reduce, Rearrange
 
-  models = [_load_backbone(p, device) for p in backbone_paths]
-  early_ch, late_ch = _adapter_dims(models[0], early, late, device)
-
-  specialists = [
-    Specialist(
-      Driver(m, early, late),
-      Decoder(value_dim, early_ch, Rearrange("b c -> b c 1 1")),
-      QKVEncoder(late_ch, key_dim, value_dim, Reduce("b c h w -> b c", "mean")),
-    )
-    for m in models
-  ]
+  specialists = []
+  for spec in specs:
+    model = _load_backbone(spec.backbone_path, device)
+    # per-spec, not once from specialists[0]: early/late can now differ per
+    # specialist, so each one's own adapter dims must be measured separately
+    early_ch, late_ch = _adapter_dims(model, spec.early, spec.late, device)
+    decoder_cls = DECODERS[spec.decoder]
+    encoder_cls = ENCODERS[spec.encoder]
+    specialists.append(Specialist(
+      Driver(model, spec.early, spec.late),
+      decoder_cls(value_dim, early_ch, Rearrange("b c -> b c 1 1")),
+      encoder_cls(late_ch, key_dim, value_dim, Reduce("b c h w -> b c", "mean")),
+    ))
   return Orchestrator(specialists, key_dim, value_dim, num_classes).to(device)
+
+
+def _resolve_backbone_paths(manifest: Optional[Path], backbones: Optional[list[Path]]) -> list[Path]:
+  """Exactly one of manifest/backbones is set (enforced by an argparse
+  mutually-exclusive group), both resolve to the same ordered list."""
+  if manifest is not None:
+    data = json.loads(manifest.read_text())
+    return [Path(p) for p in data["backbones"]]
+  return list(backbones)
+
+
+# ---------------------------------------------------------------------------
+# Aggregation across seed replicates
+# ---------------------------------------------------------------------------
+
+_SUMMARY_METRICS = ("val_accuracy", "val_loss", "test_accuracy", "test_loss")
+
+
+def summarize_replicates(experiment: str, seeds: list[int], repo: Optional[str] = None) -> Run:
+  """Aggregate a group of N_2 joint-training replicates — same config,
+  different --seed, same --experiment (scripts/replicate_joint.py) — into
+  one distinguished summary Run in that same experiment: mean/std of each
+  final metric across seeds.
+
+  Runs are matched by hparams.seed membership in `seeds`, not by an Aim
+  query on a nested field — simpler, and doesn't rely on the query DSL
+  reaching into hparams. Every seed must be present: a partial sweep raises
+  instead of silently averaging a subset and reporting it as the full group.
+  """
+  repo_obj = Repo(repo) if repo else Repo.default_repo()
+  # A run's hash/experiment are visible to other processes immediately, but
+  # its params (hparams, final) and tracked metric sequences are not — Aim
+  # only reconciles those into the queryable index on demand (what `aim
+  # storage reindex` does), and nothing triggers that automatically for
+  # SDK-only writes with no `aim up` server running. Without this, `r["final"]`
+  # below raises even for a run that completed and wrote it. Mirrors
+  # `aim storage reindex --yes`; private API, but it's what that command
+  # itself calls, and a full rebuild over this project's run count is <1s.
+  repo_obj._recreate_index()
+  candidates = repo_obj.query_runs(f"run.experiment == '{experiment}'").iter_runs()
+  matched = [item.run for item in candidates if item.run.get("hparams", {}).get("seed") in seeds]
+  if len(matched) != len(seeds):
+    found = sorted(r.get("hparams", {}).get("seed") for r in matched)
+    raise SystemExit(
+      f"expected {len(seeds)} replicate runs for seeds {sorted(seeds)} in "
+      f"experiment {experiment!r}, found {len(matched)} (seeds present: {found})"
+    )
+
+  summary = Run(experiment=experiment, repo=repo)
+  summary.add_tag("summary")
+  summary["n_replicates"] = len(matched)
+  summary["summarized_seeds"] = sorted(seeds)
+  summary["metric_docs"] = metric_docs.summary_as_dict()
+  for metric in _SUMMARY_METRICS:
+    values = [r["final"][metric] for r in matched]
+    summary.track(float(np.mean(values)), name=f"{metric}_mean")
+    summary.track(float(np.std(values)), name=f"{metric}_std")
+  return summary
 
 
 def main() -> None:
@@ -380,11 +521,19 @@ def main() -> None:
   sub = parser.add_subparsers(dest="method", required=True)
 
   p = sub.add_parser("communicative", help="TarMAC-aligned communicative ensemble")
-  p.add_argument("--backbones", type=Path, nargs="+", required=True,
-                 help="Backbone checkpoint paths (≥2)")
+  backbone_group = p.add_mutually_exclusive_group(required=True)
+  backbone_group.add_argument("--manifest", type=Path,
+                 help="selection/ manifest JSON — trains on its backbones list, in order")
+  backbone_group.add_argument("--backbones", type=Path, nargs="+",
+                 help="Backbone checkpoint paths (≥2), for ad hoc runs outside selection")
+  p.add_argument("--specialist-config", type=Path, default=None,
+                 help='JSON {"<index>": {early?, late?, encoder?, decoder?}} sparse '
+                      "per-specialist overrides, keyed by position in the resolved "
+                      "backbone list — only positions differing from --early/--late "
+                      "need an entry")
   p.add_argument("--split-file", type=Path, default=_REPO_ROOT / "splits/three_way_seed0.pt")
-  p.add_argument("--early", default="layer1.2", help="Decoder injection layer")
-  p.add_argument("--late", default="layer3.0", help="Encoder read layer")
+  p.add_argument("--early", default="layer1.2", help="Decoder injection layer (default for all specialists)")
+  p.add_argument("--late", default="layer3.0", help="Encoder read layer (default for all specialists)")
   p.add_argument("--key-dim", type=int, default=16)
   p.add_argument("--value-dim", type=int, default=64)
   p.add_argument("--k-rounds", type=int, default=1,
@@ -394,19 +543,33 @@ def main() -> None:
   p.add_argument("--weight-decay", type=float, default=1e-4)
   p.add_argument("--batch-size", type=int, default=128)
   p.add_argument("--seed", type=int, default=0)
+  p.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True,
+                 help="cudnn.deterministic (default: on). --no-deterministic trades exact "
+                      "reproducibility for cudnn's autotuned kernels.")
   p.add_argument("--num-classes", type=int, default=100)
   p.add_argument("--experiment", default="communicative", help="Aim experiment name")
   p.add_argument("--no-track", action="store_true", help="Disable Aim tracking")
   p.add_argument("--output-dir", type=Path, default=_REPO_ROOT / "ensemble/checkpoints")
   p.add_argument("--data-root", type=str, default=str(_REPO_ROOT / "data"))
   p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+
+  ps = sub.add_parser("summarize", help="Aggregate a seed-replicate group into a summary run")
+  ps.add_argument("--experiment", required=True, help="Aim experiment name shared by the replicate runs")
+  ps.add_argument("--seeds", type=int, nargs="+", required=True, help="Joint seeds to aggregate")
+  ps.add_argument("--repo", type=str, default=None, help="Aim repo path (default: Aim's default repo)")
+
   args = parser.parse_args()
 
-  if len(args.backbones) < 2:
+  if args.method == "summarize":
+    run = summarize_replicates(args.experiment, args.seeds, repo=args.repo)
+    print(f"[summarize] wrote summary run {run.hash} in experiment {args.experiment!r}")
+    return
+
+  backbone_paths = _resolve_backbone_paths(args.manifest, args.backbones)
+  if len(backbone_paths) < 2:
     parser.error("need at least 2 backbones")
 
-  torch.manual_seed(args.seed)
-  torch.cuda.manual_seed_all(args.seed)
+  seed_everything(args.seed, args.deterministic)
 
   cfg = TrainConfig(
     epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
@@ -416,12 +579,12 @@ def main() -> None:
   train_loader, val_loader, test_loader = make_loaders(
     args.split_file, args.batch_size, args.data_root
   )
+  specs = resolve_specialist_specs(backbone_paths, args, args.specialist_config)
   orchestrator = build_communicative(
-    args.backbones, args.early, args.late,
-    args.key_dim, args.value_dim, args.num_classes, args.device,
+    specs, args.key_dim, args.value_dim, args.num_classes, args.device,
   )
   n_trainable = sum(p.numel() for p in orchestrator.parameters() if p.requires_grad)
-  print(f"[communicative] {len(args.backbones)} backbones  k_rounds={args.k_rounds}  "
+  print(f"[communicative] {len(backbone_paths)} backbones  k_rounds={args.k_rounds}  "
         f"trainable params={n_trainable:,}")
 
   # the orchestrator readout is log of prob-averaged member softmaxes, so the
@@ -442,14 +605,18 @@ def main() -> None:
     run["hparams"] = {
       **asdict(cfg),
       "method": "communicative",
-      "backbones": [str(p) for p in args.backbones],
+      "backbones": [str(p) for p in backbone_paths],
+      "manifest": str(args.manifest) if args.manifest else None,
+      "specialist_config": str(args.specialist_config) if args.specialist_config else None,
       "split_file": str(args.split_file),
       "early": args.early, "late": args.late,
       "key_dim": args.key_dim, "value_dim": args.value_dim,
       "k_rounds": args.k_rounds,
       "batch_size": args.batch_size,
+      "deterministic": args.deterministic,
     }
     run["baseline_avg_probs"] = baseline
+    run["metric_docs"] = metric_docs.as_dict()
     print(f"aim run hash: {run.hash}")
 
   optimizer = torch.optim.AdamW(
@@ -473,20 +640,27 @@ def main() -> None:
       for k, v in results[name].items():
         run.track(v, name=f"final_{name}_{k}")
 
-  stems = "_".join(p.stem for p in args.backbones)
+  # flat {val_accuracy, val_loss, test_accuracy, test_loss} — also stored as a
+  # plain run param (not just .track()'d) so summarize_replicates can read it
+  # back with a dict lookup instead of a metric-sequence query
+  final_flat = {f"{name}_{k}": v for name, res in results.items() for k, v in res.items()}
+  if run is not None:
+    run["final"] = final_flat
+
+  stems = "_".join(p.stem for p in backbone_paths)
   out = args.output_dir / f"communicative_{stems}.pt"
   out.parent.mkdir(parents=True, exist_ok=True)
   torch.save({
     "state_dict": orchestrator.state_dict(),
     "metadata": {
       "method": "communicative",
-      "backbones": [str(p) for p in args.backbones],
+      "backbones": [str(p) for p in backbone_paths],
       "split_file": str(args.split_file),
       "early": args.early, "late": args.late,
       "key_dim": args.key_dim, "value_dim": args.value_dim,
       "k_rounds": args.k_rounds,
       "baseline_avg_probs": baseline,
-      **{f"{name}_{k}": v for name, res in results.items() for k, v in res.items()},
+      **final_flat,
       **asdict(cfg),
     },
   }, out)

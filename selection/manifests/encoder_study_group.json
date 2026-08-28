@@ -1,0 +1,58 @@
+{
+  "created": "2026-08-27T23:25:13+00:00",
+  "k": 3,
+  "selected_by": "oracle_minus_bagging",
+  "direction": "max",
+  "metric_version": 1,
+  "percentile": 75.0,
+  "position": 14699,
+  "row": 8031,
+  "combination": [
+    7,
+    36,
+    39
+  ],
+  "metrics": {
+    "bagging": 0.6686000227928162,
+    "oracle": 0.7639999985694885,
+    "oracle_minus_bagging": 0.09539999812841415,
+    "oracle_minus_shared": 0.27239999175071716,
+    "shared": 0.49160000681877136,
+    "soft_oracle": 0.7667999863624573
+  },
+  "pool_digest": "55666115e7c0ffb3",
+  "split_digest": "c6f2c9ce5e2f61af",
+  "split_file": "splits/three_way_seed42.pt",
+  "pool_dir": "backbone/checkpoints/pool",
+  "experts": [
+    {
+      "index": 7,
+      "path": "backbone/checkpoints/pool/resnet110_seed868498938_snap3of5.pt",
+      "digest": "2c3fee23c263afda",
+      "seed": 868498938,
+      "snapshot": 3,
+      "val_acc": 0.6316
+    },
+    {
+      "index": 36,
+      "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap2of5.pt",
+      "digest": "fb49b7977dab416f",
+      "seed": 1766788445,
+      "snapshot": 2,
+      "val_acc": 0.6222
+    },
+    {
+      "index": 39,
+      "path": "backbone/checkpoints/pool/resnet110_seed1766788445_snap5of5.pt",
+      "digest": "d32104fabea6a2e1",
+      "seed": 1766788445,
+      "snapshot": 5,
+      "val_acc": 0.6394
+    }
+  ],
+  "backbones": [
+    "backbone/checkpoints/pool/resnet110_seed868498938_snap3of5.pt",
+    "backbone/checkpoints/pool/resnet110_seed1766788445_snap2of5.pt",
+    "backbone/checkpoints/pool/resnet110_seed1766788445_snap5of5.pt"
+  ]
+}

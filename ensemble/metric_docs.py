@@ -80,6 +80,8 @@ _COMPONENT = ContextKey(
                "back into the backbone.",
     "fc": "the backbone's own classification head — the one part of the "
           "otherwise-frozen backbone left trainable.",
+    "trunk": "the shared MLP trunk in MLPEncoder, before it diverges into "
+             "query/key/value heads. Only present when --encoder mlp is used.",
   },
 )
 

@@ -13,7 +13,7 @@ Example
 -------
 uv run python ensemble/train.py communicative \\
     --manifest selection/manifests/high_gap.json \\
-    --split-file splits/three_way_seed0.pt \\
+    --split-file splits/three_way_seed42.pt \\
     --epochs 10 --k-rounds 1
 """
 
@@ -40,7 +40,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from backbone.resnet import ResNet
 from ensemble.communicative.driver import Driver
-from ensemble.communicative.bus import QKVEncoder, Decoder
+from ensemble.communicative.bus import QKVEncoder, MLPEncoder, Decoder
 from ensemble.communicative.orchestrator import Specialist, Orchestrator
 from ensemble.eval import evaluate
 from ensemble import metric_docs
@@ -91,7 +91,7 @@ class TrainJob:
 # trainable components of the orchestrator, matched against parameter name
 # tokens; query/key norms are the early warning for vanishing gradients since
 # they only receive gradient through the attention softmax
-_GRAD_COMPONENTS = ("query_head", "key_head", "value_head", "decoder", "fc")
+_GRAD_COMPONENTS = ("query_head", "key_head", "value_head", "decoder", "fc", "trunk")
 
 
 def _component_of(param_name: str) -> Optional[str]:
@@ -383,7 +383,7 @@ class SpecialistSpec:
 # Swappable head implementations, keyed by the name SpecialistSpec.encoder /
 # .decoder refers to. Additive only: a new head architecture is added by
 # registering a class here, never by editing build_communicative.
-ENCODERS: dict[str, type] = {"qkv": QKVEncoder}
+ENCODERS: dict[str, type] = {"qkv": QKVEncoder, "mlp": MLPEncoder}
 DECODERS: dict[str, type] = {"mlp": Decoder}
 
 
@@ -411,8 +411,8 @@ def resolve_specialist_specs(
       backbone_path=path,
       early=o.get("early", defaults.early),
       late=o.get("late", defaults.late),
-      encoder=o.get("encoder", "qkv"),
-      decoder=o.get("decoder", "mlp"),
+      encoder=o.get("encoder", defaults.encoder),
+      decoder=o.get("decoder", defaults.decoder),
     ))
   return specs
 
@@ -531,9 +531,13 @@ def main() -> None:
                       "per-specialist overrides, keyed by position in the resolved "
                       "backbone list — only positions differing from --early/--late "
                       "need an entry")
-  p.add_argument("--split-file", type=Path, default=_REPO_ROOT / "splits/three_way_seed0.pt")
+  p.add_argument("--split-file", type=Path, default=_REPO_ROOT / "splits/three_way_seed42.pt")
   p.add_argument("--early", default="layer1.2", help="Decoder injection layer (default for all specialists)")
   p.add_argument("--late", default="layer3.0", help="Encoder read layer (default for all specialists)")
+  p.add_argument("--encoder", default="qkv", choices=sorted(ENCODERS),
+                 help="Encoder head architecture (default for all specialists)")
+  p.add_argument("--decoder", default="mlp", choices=sorted(DECODERS),
+                 help="Decoder head architecture (default for all specialists)")
   p.add_argument("--key-dim", type=int, default=16)
   p.add_argument("--value-dim", type=int, default=64)
   p.add_argument("--k-rounds", type=int, default=1,
@@ -610,6 +614,7 @@ def main() -> None:
       "specialist_config": str(args.specialist_config) if args.specialist_config else None,
       "split_file": str(args.split_file),
       "early": args.early, "late": args.late,
+      "encoder": args.encoder, "decoder": args.decoder,
       "key_dim": args.key_dim, "value_dim": args.value_dim,
       "k_rounds": args.k_rounds,
       "batch_size": args.batch_size,
@@ -657,6 +662,7 @@ def main() -> None:
       "backbones": [str(p) for p in backbone_paths],
       "split_file": str(args.split_file),
       "early": args.early, "late": args.late,
+      "encoder": args.encoder, "decoder": args.decoder,
       "key_dim": args.key_dim, "value_dim": args.value_dim,
       "k_rounds": args.k_rounds,
       "baseline_avg_probs": baseline,

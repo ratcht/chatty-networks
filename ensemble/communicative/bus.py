@@ -40,6 +40,27 @@ class MLPEncoder(nn.Module):
     return self.query_head(f), self.key_head(f), self.value_head(f)
 
 
+class MLPNoLNEncoder(nn.Module):
+  """MLPEncoder with the trunk's LayerNorm removed — isolates whether the
+  nonlinearity itself (vs. the normalization riding along with it) is what
+  the expressiveness gain depends on."""
+  def __init__(self, in_dim: int, key_dim: int, value_dim: int, reduce: nn.Module,
+               hidden_dim: int | None = None):
+    super().__init__()
+    self.reduce = reduce
+    hidden_dim = hidden_dim or in_dim
+    self.trunk = nn.Sequential(
+      nn.Linear(in_dim, hidden_dim), nn.GELU(),
+    )
+    self.query_head = nn.Linear(hidden_dim, key_dim)
+    self.key_head = nn.Linear(hidden_dim, key_dim)
+    self.value_head = nn.Linear(hidden_dim, value_dim)
+
+  def forward(self, x) -> tuple[t.Tensor, t.Tensor, t.Tensor]:
+    f = self.trunk(self.reduce(x))
+    return self.query_head(f), self.key_head(f), self.value_head(f)
+
+
 class Decoder(nn.Module):
   def __init__(self, value_dim: int, out_dim: int, expand: nn.Module):
     super().__init__()

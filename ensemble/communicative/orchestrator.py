@@ -32,6 +32,16 @@ class Orchestrator(nn.Module):
     # message magnitudes from the most recent communication round (see forward);
     # stays None until a forward with k_rounds >= 1 runs
     self.last_stats: dict[str, float] | None = None
+    # mean per-row entropy of the bus's attention weights, averaged across the
+    # batch — same round as last_stats, None under the same conditions
+    self.last_attn_entropy: float | None = None
+    # mean peak attention weight max_i p_i, averaged over receivers and batch —
+    # the other half of the concentration picture: entropy is a whole-row
+    # summary, this is just how much mass the winner took
+    self.last_attn_top1: float | None = None
+    # the bus's post-softmax attention itself, (b, n, n), detached — entropy
+    # says how concentrated routing is, this says who it concentrated *on*
+    self.last_attn: t.Tensor | None = None
     # per-specialist logits before (perception pass) and after communication,
     # detached — lets the trainer measure how messages changed the answers
     self.last_shift: dict[str, t.Tensor] | None = None
@@ -63,6 +73,9 @@ class Orchestrator(nn.Module):
     outputs = t.zeros((n, b, self.num_classes), device=device)
 
     self.last_stats = None
+    self.last_attn_entropy = None
+    self.last_attn_top1 = None
+    self.last_attn = None
     self.last_shift = None
     pre_logits = None
 
@@ -90,7 +103,7 @@ class Orchestrator(nn.Module):
           pre_logits = outputs.detach().clone()
 
         # aggregate messages and stage them for injection on the next pass
-        c, _ = self.bus(Q, K, V)
+        c, attn = self.bus(Q, K, V)
         for i, s in enumerate(self.specialists):
           decoder_outs[i].value = s.decoder(c[:, i])
 
@@ -104,6 +117,16 @@ class Orchestrator(nn.Module):
               decoder_outs[i].value.flatten(1).norm(dim=1).mean() for i in range(n)
             ]).mean().item(),
           }
+          # per-row (per-receiver) entropy of the attention distribution over
+          # senders, averaged across receivers and batch — low entropy means a
+          # receiver is listening to ~one sender, high (up to log(n), uniform)
+          # means it's spreading attention evenly
+          row_entropy = -(attn * (attn + 1e-12).log()).sum(dim=-1)  # (b, n)
+          self.last_attn_entropy = row_entropy.mean().item()
+          # peak of each receiver's distribution, averaged the same way: 1/n is
+          # uniform, 1.0 is a hard one-hot gate
+          self.last_attn_top1 = attn.max(dim=-1).values.mean().item()
+          self.last_attn = attn.detach()
 
     if pre_logits is not None:
       self.last_shift = {"pre": pre_logits, "post": outputs.detach()}

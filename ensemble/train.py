@@ -40,7 +40,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from backbone.resnet import ResNet
 from ensemble.communicative.driver import Driver
-from ensemble.communicative.bus import QKVEncoder, MLPEncoder, Decoder
+from ensemble.communicative.bus import QKVEncoder, MLPEncoder, MLPNoLNEncoder, Decoder
 from ensemble.communicative.orchestrator import Specialist, Orchestrator
 from ensemble.eval import evaluate
 from ensemble import metric_docs
@@ -145,6 +145,31 @@ def update_to_weight_ratios(model: nn.Module, before: dict[str, torch.Tensor]) -
   return {k: num[k] ** 0.5 / max(den[k] ** 0.5, 1e-12) for k in num}
 
 
+def layernorm_param_norms(model: nn.Module) -> dict[str, float]:
+  """L2 norm of every LayerNorm's affine params, gamma (weight) and beta (bias).
+
+  Only present when the model has any nn.LayerNorm (MLPEncoder's trunk) —
+  empty for qkv-encoder arms.
+  """
+  gammas = [m.weight.detach() for m in model.modules()
+            if isinstance(m, nn.LayerNorm) and m.weight is not None]
+  betas = [m.bias.detach() for m in model.modules()
+           if isinstance(m, nn.LayerNorm) and m.bias is not None]
+
+  def norm(params) -> Optional[float]:
+    if not params:
+      return None
+    return torch.norm(torch.stack([p.norm(2) for p in params])).item()
+
+  out = {}
+  gamma_norm, beta_norm = norm(gammas), norm(betas)
+  if gamma_norm is not None:
+    out["gamma"] = gamma_norm
+  if beta_norm is not None:
+    out["beta"] = beta_norm
+  return out
+
+
 def answer_shift_stats(pre: torch.Tensor, post: torch.Tensor, y: torch.Tensor) -> dict[str, float]:
   """How specialists changed their answers in response to messages.
 
@@ -180,6 +205,150 @@ def answer_shift_stats(pre: torch.Tensor, post: torch.Tensor, y: torch.Tensor) -
   return out
 
 
+def routing_counts(
+  attn: torch.Tensor,
+  pre: torch.Tensor,
+  post: torch.Tensor,
+  y: torch.Tensor,
+) -> dict[str, tuple[int, int]]:
+  """Who each receiver routed to, and whether that specialist was right.
+
+  attn: (b, n, n) post-softmax attention, receiver-major. pre/post: (n, b, C)
+  per-specialist logits from before/after communication. y: (b,) labels.
+
+  Entropy says how concentrated routing is; this says who it concentrated *on*,
+  which is the part that can be right or wrong. A sharp gate onto the wrong
+  specialist is worse than a soft gate onto the right one, and the two are
+  indistinguishable by entropy.
+
+  Returns (numerator, denominator) counts rather than rates so a caller
+  averaging over batches can sum them: the corrected/corrupted subsets vary
+  wildly in size per batch, and averaging per-batch rates would weight a batch
+  holding two corrected examples the same as one holding fifty.
+
+  Every rate but self_attn is restricted to receivers that attended to
+  *another* specialist. Self-attention would otherwise make the corrected split
+  circular — a corrected receiver was wrong before the round by definition, so
+  scoring its self-attention as a routing miss measures the definition rather
+  than the routing.
+  """
+  n = attn.shape[1]
+  attended = attn.argmax(-1)                                       # (b, n)
+  is_self = attended == torch.arange(n, device=attn.device)[None, :]
+  non_self = ~is_self
+
+  right_pre = (pre.argmax(-1) == y).T                              # (b, n)
+  right_post = (post.argmax(-1) == y).T
+  attended_right = right_pre.gather(1, attended)                   # (b, n)
+
+  corrected = ~right_pre & right_post
+  corrupted = right_pre & ~right_post
+
+  def counts(mask: torch.Tensor) -> tuple[int, int]:
+    return int((attended_right & mask).sum()), int(mask.sum())
+
+  return {
+    "self_attn": (int(is_self.sum()), is_self.numel()),
+    "all": counts(non_self),
+    "corrected": counts(non_self & corrected),
+    "corrupted": counts(non_self & corrupted),
+  }
+
+
+# joint routing patterns are encoded base-n into a single int64, so n**(n-1)
+# has to stay inside int64; well before that bound the joint histogram stops
+# being readable anyway (a mode share over n**n patterns is ~0 for any large
+# group), so the joint series is simply dropped past this size
+_MAX_JOINT_N = 12
+
+
+def _tally(x: torch.Tensor) -> dict[int, int]:
+  """Histogram of a 1-D integer tensor as a plain dict, so histograms from
+  different batches can be pooled by key without agreeing on a bin count."""
+  vals, counts = torch.unique(x, return_counts=True)
+  return dict(zip(vals.tolist(), counts.tolist()))
+
+
+def _merge_tally(into: dict[int, int], new: dict[int, int]) -> None:
+  for k, v in new.items():
+    into[k] = into.get(k, 0) + v
+
+
+def routing_pattern_counts(attn: torch.Tensor) -> dict[str, dict[int, int]]:
+  """How often each routing pattern occurs, jointly and per receiver.
+
+  attn: (b, n, n) post-softmax attention, receiver-major.
+
+  A *pattern* is one example's whole wiring diagram — the tuple of argmax
+  senders across all n receivers at once, e.g. (0, 2, 2) — encoded base-n into
+  one integer so it can be tallied. The per-receiver entries are the marginals
+  of that tuple: the histogram of receiver i's argmax on its own.
+
+  Returns raw histograms rather than the mode share itself because the share is
+  not poolable — a caller accumulating over batches has to sum the counts and
+  take the mode once at the end, since the modal pattern of the whole set need
+  not be the modal pattern of any single batch.
+  """
+  n = attn.shape[1]
+  attended = attn.argmax(-1)                                       # (b, n)
+
+  out: dict[str, dict[int, int]] = {}
+  if n <= _MAX_JOINT_N:
+    codes = (attended * (n ** torch.arange(n, device=attn.device))).sum(-1)
+    out["joint"] = _tally(codes)
+  for i in range(n):
+    out[str(i)] = _tally(attended[:, i])
+  return out
+
+
+def route_flip_rate(current: torch.Tensor, previous: Optional[torch.Tensor]) -> Optional[float]:
+  """Fraction of (example, receiver) pairs that changed attended-to sender.
+
+  Both are (N, n) argmax tensors over the same examples in the same order — the
+  val loader is shuffle=False over a fixed Subset with no augmentation, so row
+  r is the same image every epoch and the comparison is meaningful.
+
+  None when there is nothing to compare against (the first epoch) or when the
+  shapes disagree, which would mean the evaluation set changed underneath us —
+  better to skip the series than to report a flip rate against a different set
+  of images.
+  """
+  if previous is None or previous.shape != current.shape:
+    return None
+  return (current != previous).float().mean().item()
+
+
+@dataclass
+class RoutingSummary:
+  """Routing diagnostics pooled over one full evaluation pass."""
+  counts: dict[str, tuple[int, int]]          # routing_counts(), pooled
+  patterns: dict[str, dict[int, int]]         # routing_pattern_counts(), pooled
+  routes: Optional[torch.Tensor] = None       # (N, n) argmax, in loader order
+
+
+def _track_mode_share(run: Run, patterns: dict[str, dict[int, int]], prefix: str,
+                      step: int, epoch: int) -> None:
+  for receiver, hist in patterns.items():
+    total = sum(hist.values())
+    if total:
+      run.track(max(hist.values()) / total, name=f"{prefix}routing_mode_share",
+                step=step, epoch=epoch, context={"receiver": receiver})
+
+
+def _track_routing(run: Run, counts: dict[str, tuple[int, int]], prefix: str,
+                   step: int, epoch: int) -> None:
+  num, den = counts["self_attn"]
+  if den:
+    run.track(num / den, name=f"{prefix}self_attn_rate", step=step, epoch=epoch)
+  for subset in ("all", "corrected", "corrupted"):
+    num, den = counts[subset]
+    # empty subsets are normal (early training corrects nothing); tracking a
+    # NaN would poison the series rather than leave a gap in it
+    if den:
+      run.track(num / den, name=f"{prefix}routed_correct", step=step, epoch=epoch,
+                context={"subset": subset})
+
+
 def _track_answer_shift(run: Run, stats: dict[str, float], prefix: str, step: int, epoch: int) -> None:
   # kl is unbounded while the other kinds live in [0, 1] — give it its own
   # metric name so it never shares a y-axis with the rates
@@ -197,24 +366,47 @@ def _evaluate_with_shift(
   device: str,
   criterion: nn.Module,
   **model_kwargs,
-) -> tuple[dict[str, float], dict[str, float]]:
-  """Single val pass returning (loss/accuracy, answer-shift stats)."""
+) -> tuple[dict[str, float], dict[str, float], RoutingSummary]:
+  """Single val pass returning (loss/accuracy, answer-shift stats, routing)."""
   model.eval()
   correct = total = 0
   loss_sum = 0.0
   shift_sums: dict[str, float] = {}
+  routing_sums: dict[str, list[int]] = {}
+  pattern_sums: dict[str, dict[int, int]] = {}
+  route_chunks: list[torch.Tensor] = []
   for x, y in loader:
     x, y = x.to(device), y.to(device)
     out = model(x, **model_kwargs)
     correct += (out.argmax(-1) == y).sum().item()
     loss_sum += criterion(out, y).item() * y.size(0)
     total += y.size(0)
+    attn = getattr(model, "last_attn", None)
+    if attn is not None:
+      for k, hist in routing_pattern_counts(attn).items():
+        _merge_tally(pattern_sums.setdefault(k, {}), hist)
+      # kept in loader order and on CPU: the next epoch diffs against this to
+      # get the flip rate, and n is small enough that int8 always holds it
+      route_chunks.append(attn.argmax(-1).to(torch.int8).cpu())
     shift = getattr(model, "last_shift", None)
     if shift is not None:
       for k, v in answer_shift_stats(shift["pre"], shift["post"], y).items():
         shift_sums[k] = shift_sums.get(k, 0.0) + v * y.size(0)
+      if attn is not None:
+        # summed as counts, not averaged as per-batch rates: the subsets are
+        # small and uneven, so only a pooled numerator/denominator is right
+        for k, (num, den) in routing_counts(attn, shift["pre"], shift["post"], y).items():
+          acc = routing_sums.setdefault(k, [0, 0])
+          acc[0] += num
+          acc[1] += den
   metrics = {"accuracy": correct / total, "loss": loss_sum / total}
-  return metrics, {k: v / total for k, v in shift_sums.items()}
+  return (metrics,
+          {k: v / total for k, v in shift_sums.items()},
+          RoutingSummary(
+            counts={k: (v[0], v[1]) for k, v in routing_sums.items()},
+            patterns=pattern_sums,
+            routes=torch.cat(route_chunks) if route_chunks else None,
+          ))
 
 
 def train(job: TrainJob, *args, **kwargs) -> list[float]:
@@ -223,6 +415,8 @@ def train(job: TrainJob, *args, **kwargs) -> list[float]:
   job.model.train()
   losses: list[float] = []
   step = 0
+  # last epoch's val routing decisions, (N, n) argmax — see route_flip_rate
+  prev_routes: Optional[torch.Tensor] = None
 
   # endless val-batch stream: one batch per training step gives val_loss the
   # same frequency (and single-batch noise profile) as train_loss at the cost
@@ -270,11 +464,36 @@ def train(job: TrainJob, *args, **kwargs) -> list[float]:
             for part, v in stats.items():
               job.run.track(v, name="msg_norm", step=step, epoch=epoch,
                             context={"part": part})
+          # gamma/beta norms, if the model has any LayerNorm (MLPEncoder's trunk)
+          for param, v in layernorm_param_norms(job.model).items():
+            job.run.track(v, name="layernorm_param_norm", step=step, epoch=epoch,
+                          context={"param": param})
+          # per-row attention entropy, if the model exposes it (Orchestrator does)
+          attn_entropy = getattr(job.model, "last_attn_entropy", None)
+          if attn_entropy is not None:
+            job.run.track(attn_entropy, name="attn_entropy", step=step, epoch=epoch)
+          # peak attention weight, the same row statistic read as a max instead
+          # of an entropy
+          attn_top1 = getattr(job.model, "last_attn_top1", None)
+          if attn_top1 is not None:
+            job.run.track(attn_top1, name="attn_top1", step=step, epoch=epoch)
+          # how much of the batch shares one routing pattern — the
+          # input-dependence question attn_entropy/attn_top1 structurally
+          # cannot answer, since both average away the batch dimension
+          attn = getattr(job.model, "last_attn", None)
+          if attn is not None:
+            _track_mode_share(job.run, routing_pattern_counts(attn), "", step, epoch)
           # how specialists changed their answers in response to messages
           shift = getattr(job.model, "last_shift", None)
           if shift is not None:
             _track_answer_shift(job.run, answer_shift_stats(shift["pre"], shift["post"], y),
                                 "answer_shift", step, epoch)
+            # whether attention concentrated on a specialist that was actually
+            # right — needs both the attention and the pre/post opinions
+            if attn is not None:
+              _track_routing(job.run,
+                             routing_counts(attn, shift["pre"], shift["post"], y),
+                             "", step, epoch)
           # streaming single-batch val loss; must run after the train-batch
           # diagnostics above since this forward overwrites last_stats/last_shift
           if val_iter is not None:
@@ -294,12 +513,25 @@ def train(job: TrainJob, *args, **kwargs) -> list[float]:
       if job.run is not None:
         job.run.track(train_acc, name="train_accuracy", step=epoch, epoch=epoch)
       if job.val_loader is not None:
-        val, val_shift = _evaluate_with_shift(
+        val, val_shift, val_routing = _evaluate_with_shift(
           job.model, job.val_loader, cfg.device, job.criterion, **kwargs)
         job.model.train()  # the val pass leaves the model in eval mode
+        # how much of the routing changed since last epoch, over the same
+        # images in the same order — separates a wiring that was learned from
+        # one that was fixed at init and never moved
+        flips = route_flip_rate(val_routing.routes, prev_routes) \
+          if val_routing.routes is not None else None
+        if val_routing.routes is not None:
+          prev_routes = val_routing.routes
         if job.run is not None:
           job.run.track(val["accuracy"], name="val_accuracy", step=epoch, epoch=epoch)
           _track_answer_shift(job.run, val_shift, "val_answer_shift", epoch, epoch)
+          _track_routing(job.run, val_routing.counts, "val_", epoch, epoch)
+          _track_mode_share(job.run, val_routing.patterns, "val_", epoch, epoch)
+          # None on the first epoch — nothing to diff against yet, and a 0.0
+          # there would read as "routing never moved", the exact opposite
+          if flips is not None:
+            job.run.track(flips, name="val_route_flip_rate", step=epoch, epoch=epoch)
         epoch_line += "  " + "  ".join(f"val_{k} {v:.4f}" for k, v in val.items())
       pbar.write(epoch_line)
   except KeyboardInterrupt:
@@ -383,7 +615,7 @@ class SpecialistSpec:
 # Swappable head implementations, keyed by the name SpecialistSpec.encoder /
 # .decoder refers to. Additive only: a new head architecture is added by
 # registering a class here, never by editing build_communicative.
-ENCODERS: dict[str, type] = {"qkv": QKVEncoder, "mlp": MLPEncoder}
+ENCODERS: dict[str, type] = {"qkv": QKVEncoder, "mlp": MLPEncoder, "mlp_no_ln": MLPNoLNEncoder}
 DECODERS: dict[str, type] = {"mlp": Decoder}
 
 
@@ -652,8 +884,12 @@ def main() -> None:
   if run is not None:
     run["final"] = final_flat
 
+  # architecture + seed are in the name, not just the backbones: every arm of an
+  # encoder study shares one fixed expert group, so a backbone-only name makes
+  # every arm and every seed collide on one path and silently overwrite
   stems = "_".join(p.stem for p in backbone_paths)
-  out = args.output_dir / f"communicative_{stems}.pt"
+  arch = f"{args.encoder}_k{args.key_dim}_v{args.value_dim}_r{args.k_rounds}"
+  out = args.output_dir / f"communicative_{stems}_{arch}_seed{args.seed}.pt"
   out.parent.mkdir(parents=True, exist_ok=True)
   torch.save({
     "state_dict": orchestrator.state_dict(),

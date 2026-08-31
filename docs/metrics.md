@@ -94,6 +94,26 @@ Tracked with no context — one series.
 
 The substance of what's transmitted — send (value) → combine (aggregated) → decode (injection) — independent of what any specialist does with it.
 
+#### `attn_entropy`
+
+**Summary.** Mean per-row (per-receiver) entropy of the bus's attention weights over senders, averaged across the batch.
+
+**Computation.** -(attn * attn.log()).sum(-1) computed on TarMACBus's post-softmax attn (b, n, n) inside Orchestrator.forward, then meaned over both the receiver and batch dims to one scalar per step.
+
+**Intent.** How concentrated each receiver's attention is over the n senders. Low and falling means receivers are converging onto ~one sender each (a de-facto hard selection); high and flat near log(n) (uniform attention) means every receiver is just averaging all senders equally, which — combined with a flat msg_norm — would suggest attention isn't discriminating at all.
+
+Tracked with no context — one series.
+
+#### `attn_top1`
+
+**Summary.** Mean peak attention weight, max_i p_i, over the bus's post-softmax attention rows, averaged across receivers and the batch.
+
+**Computation.** attn.max(dim=-1).values.mean() on TarMACBus's (b, n, n) post-softmax attn inside Orchestrator.forward, meaned over the receiver and batch dims to one scalar per step — the same rows attn_entropy summarizes.
+
+**Intent.** Concentration on a scale that reads directly: 1/n is uniform, 1.0 is a hard one-hot gate, and the number is comparable across groups of different size in a way entropy's log(n) ceiling is not. Read with attn_entropy — the two separate a row with one dominant sender and a flat tail (high top1, mid entropy) from one split evenly between two senders (mid top1, mid entropy), which entropy alone conflates.
+
+Tracked with no context — one series.
+
 #### `msg_norm`
 
 **Summary.** Mean L2 norm of communication-round tensors, split by pipeline stage.
@@ -109,6 +129,66 @@ The substance of what's transmitted — send (value) → combine (aggregated) �
 | `value` | what a specialist sends, before aggregation — the raw V output of its QKVEncoder. |
 | `aggregated` | what a specialist receives after attention — the softmax-weighted combination of every sender's value, specific to that receiver's query. |
 | `injection` | what the decoder actually adds back into the backbone, after transforming the aggregated message. A collapse toward zero at 'value' means specialists stopped saying anything meaningful; a collapse only at 'aggregated' means attention is washing messages out in the combination; a collapse only at 'injection' means the decoder itself is suppressing them before they reach the backbone. |
+
+#### `routing_mode_share`
+
+**Summary.** Fraction of examples in the batch whose routing pattern is the single most common one.
+
+**Computation.** routing_pattern_counts(): attn.argmax(-1) reduces each example to a tuple of attended-to senders, one per receiver (e.g. (0, 2, 2)); the tuple is encoded base-n into one integer and tallied, and the mode's count is divided by the number of examples. Per-receiver series tally that receiver's argmax alone. Histograms are pooled across batches and the mode taken once at the end, never averaged per batch — the modal pattern of a whole set need not be the modal pattern of any single batch.
+
+**Intent.** Whether routing depends on the input at all. attn_entropy and attn_top1 both average over the batch, so a receiver that always attends 100% to expert 2 and one that attends 100% to a different, image-appropriate expert each time are indistinguishable to them — identical entropy (0.0) and top1 (1.0) for opposite outcomes. This separates them: 1.0 means one wiring for every image (the channel is a constant skip connection, and every question about *who* listens to whom is moot), while a low value means the pattern genuinely varies. Read alongside attn_top1 to rule out the false positive: a low mode share with a low top1 is argmax flipping on near-ties, i.e. noise, not routing.
+
+**Context — `receiver`.** This name covers several series, one per value:
+
+| `receiver` value | meaning |
+|---|---|
+| `joint` | the whole wiring diagram: an example counts toward the mode only if *every* receiver matches the modal tuple. The strict series, and the headline number — 1.0 means one fixed wiring for the entire dataset. Being a joint statistic it is also the harshest: it is bounded above by every per-receiver series, so a low joint value alone does not say which receiver is varying. |
+| `<i>` | one series per receiver index i (0 … k-1): the mode share of that receiver's argmax on its own, ignoring what the others did. Read these against 'joint' to localize the variation — three per-receiver values near 1.0 with a low joint value would mean the receivers each have a strong preference but disagree about which example is the exception. |
+
+#### `self_attn_rate`
+
+**Summary.** Fraction of (example, receiver) pairs whose argmax attention is the receiver's own message.
+
+**Computation.** routing_counts() takes attn.argmax(-1) over the bus's (b, n, n) attention and counts how often a receiver's peak lands on its own index, over all receivers and examples in the batch. Tracked per step on train batches and per epoch over the full val set (val_self_attn_rate).
+
+**Intent.** TarMACBus lets every member attend over all members including itself, so a receiver can route to its own message. High self-attention means communication is largely not happening — the receiver is reading itself back. It is also the confound that makes routed_correct's corrected split circular, which is why routed_correct excludes these pairs.
+
+Tracked with no context — one series.
+
+#### `val_route_flip_rate`
+
+**Summary.** Fraction of (example, receiver) pairs whose attended-to sender changed since the previous epoch.
+
+**Computation.** _evaluate_with_shift() records attn.argmax(-1) for the whole val set as an (N, k) tensor in loader order; route_flip_rate() diffs it against the previous epoch's and takes the mean. The comparison is well-defined because the val loader is shuffle=False over a fixed Subset with no augmentation, so row r is the same image every epoch. Not tracked at epoch 0 — there is nothing to diff against, and a 0.0 there would read as 'routing never moved', the exact opposite of the truth.
+
+**Intent.** Whether the wiring was learned or decided at initialization. routing_mode_share is a snapshot: a reading of 1.0 at the last epoch is equally consistent with routing that explored early and then collapsed (an architecture/objective problem — fix with temperature or entropy regularization) and with routing that was set by random init and never moved because the softmax saturated and the query/key gradients died (a training-dynamics problem — fix with key/query normalization or score scaling). Same endpoint, opposite remedies, and only the trajectory distinguishes them: high-then-decaying is the first, flat at ~0 from epoch 1 is the second. Note the Decoder's output layer is zero-initialized, so the injected message starts at exactly zero and attention gets no learning signal for the first steps — the second story is live. Reference points for k=3: 0.0 is identical to last epoch, 0.667 is as different as re-randomizing. Cross-check a high value against attn_top1 — flipping among near-ties is tie noise, not re-routing.
+
+Tracked with no context — one series.
+
+#### `val_routing_mode_share`
+
+**Summary.** Same quantity as routing_mode_share, over the full validation pass once per epoch instead of per training batch.
+
+**Computation.** routing_pattern_counts() applied during _evaluate_with_shift(), with the pattern histograms summed across every batch and the mode taken over the whole val set.
+
+**Intent.** The series to read for anything quantitative. Mode share is biased upward on small samples — at batch size 1 it is trivially 1.0, and even at 128 a genuinely random routing floors out near 0.09 rather than the 0.04 it approaches over the full val set. So the per-step train series is a within-run trend line only; its absolute level is not comparable to this one, and would shift if the batch size changed.
+
+**Context — `receiver`.** This name covers several series, one per value:
+
+| `receiver` value | meaning |
+|---|---|
+| `joint` | the whole wiring diagram: an example counts toward the mode only if *every* receiver matches the modal tuple. The strict series, and the headline number — 1.0 means one fixed wiring for the entire dataset. Being a joint statistic it is also the harshest: it is bounded above by every per-receiver series, so a low joint value alone does not say which receiver is varying. |
+| `<i>` | one series per receiver index i (0 … k-1): the mode share of that receiver's argmax on its own, ignoring what the others did. Read these against 'joint' to localize the variation — three per-receiver values near 1.0 with a low joint value would mean the receivers each have a strong preference but disagree about which example is the exception. |
+
+#### `val_self_attn_rate`
+
+**Summary.** Same quantity as self_attn_rate, over the full validation pass once per epoch instead of per training batch.
+
+**Computation.** routing_counts() applied to the attention and pre/post logits captured during _evaluate_with_shift(), with numerators and denominators pooled across the whole val set.
+
+**Intent.** The lower-variance, epoch-level counterpart to self_attn_rate — the one to read when judging whether receivers are talking to each other or to themselves.
+
+Tracked with no context — one series.
 
 ### Communication interpretation
 
@@ -142,6 +222,22 @@ How specialists' predictions/beliefs change on receiving a message.
 
 Tracked with no context — one series.
 
+#### `routed_correct`
+
+**Summary.** How often the specialist a receiver attended to was itself right about the example — over pairs that attended to someone else.
+
+**Computation.** routing_counts(): attn.argmax(-1) picks each receiver's attended-to sender, which is looked up against that sender's own pre-communication correctness (Orchestrator.last_shift's 'pre' argmax vs the label). Self-attending pairs are dropped. Aggregated as pooled counts, not as a mean of per-batch rates, so uneven subset sizes weight correctly.
+
+**Intent.** Separates routing sharply from routing *well* — attn_entropy cannot tell a confident-and-right gate from a confident-and-wrong one. Read against the mean specialist accuracy: at that level, attention carries no information about who is right. The corrected/corrupted split is the sharper test, asking whether routing quality tracks the good and harm communication actually did on that example rather than just correlating in aggregate.
+
+**Context — `subset`.** This name covers several series, one per value:
+
+| `subset` value | meaning |
+|---|---|
+| `all` | every (example, receiver) pair where the receiver attended to another specialist. The headline routing-quality number: compare it against the mean specialist accuracy, which is what routing at random would score. |
+| `corrected` | the subset of those pairs where communication flipped this receiver from wrong to right. If routing is doing the work, this should sit above the 'all' rate — the receiver listened to someone who knew the answer. |
+| `corrupted` | the subset where communication flipped this receiver from right to wrong. Should sit *below* the 'all' rate: the damage should be traceable to having listened to a specialist that was itself wrong. If corrected and corrupted are both at the 'all' rate, routing quality is unrelated to what communication actually did. |
+
 #### `val_answer_shift`
 
 **Summary.** Same quantities as answer_shift, computed over the full validation pass once per epoch instead of per training batch.
@@ -170,6 +266,22 @@ Tracked with no context — one series.
 
 Tracked with no context — one series.
 
+#### `val_routed_correct`
+
+**Summary.** Same quantity as routed_correct, over the full validation pass once per epoch instead of per training batch.
+
+**Computation.** routing_counts() applied over _evaluate_with_shift()'s pass, summing counts rather than averaging per-batch rates — the corrected/corrupted subsets are small and uneven per batch, so only a pooled numerator/denominator gives the right weighting.
+
+**Intent.** The number to actually judge routing quality on: per-batch corrected/corrupted subsets are far too small to read directly. Compare against the mean specialist accuracy for this group.
+
+**Context — `subset`.** This name covers several series, one per value:
+
+| `subset` value | meaning |
+|---|---|
+| `all` | every (example, receiver) pair where the receiver attended to another specialist. The headline routing-quality number: compare it against the mean specialist accuracy, which is what routing at random would score. |
+| `corrected` | the subset of those pairs where communication flipped this receiver from wrong to right. If routing is doing the work, this should sit above the 'all' rate — the receiver listened to someone who knew the answer. |
+| `corrupted` | the subset where communication flipped this receiver from right to wrong. Should sit *below* the 'all' rate: the damage should be traceable to having listened to a specialist that was itself wrong. If corrected and corrupted are both at the 'all' rate, routing quality is unrelated to what communication actually did. |
+
 ### Training dynamics
 
 Whether optimization itself is healthy — orthogonal to whether communication helps or the model is accurate.
@@ -192,6 +304,22 @@ Whether optimization itself is healthy — orthogonal to whether communication h
 | `value_head` | the sender projection in a specialist's QKVEncoder — what gets broadcast as a message. |
 | `decoder` | the MLP that turns an aggregated message into an injection back into the backbone. |
 | `fc` | the backbone's own classification head — the one part of the otherwise-frozen backbone left trainable. |
+| `trunk` | the shared MLP trunk before it diverges into query/key/value heads. Present for --encoder mlp (Linear->GELU->LayerNorm) and --encoder mlp_no_ln (Linear->GELU, no LayerNorm) — not for qkv, which has no shared trunk at all. |
+
+#### `layernorm_param_norm`
+
+**Summary.** L2 norm of every LayerNorm's affine parameters, gamma and beta.
+
+**Computation.** torch.norm(stack([p.norm(2) for p in group])) over every nn.LayerNorm.weight (gamma) / .bias (beta) in the model, computed once per step via layernorm_param_norms(). Only non-empty for --encoder mlp — MLPEncoder's trunk is the only LayerNorm in the model.
+
+**Intent.** Whether the trunk's LayerNorm is actually learning a non-trivial affine transform or sitting at its identity init (gamma≈1 per element, beta≈0) — a LayerNorm stuck at init is doing pure normalization with no learned rescaling, which would undercut the expressiveness MLPEncoder is supposed to add over QKVEncoder.
+
+**Context — `param`.** This name covers several series, one per value:
+
+| `param` value | meaning |
+|---|---|
+| `gamma` | LayerNorm's learned scale (nn.LayerNorm.weight), one per normalized feature. Identity init is all-ones, so a norm near sqrt(hidden_dim) means it hasn't moved from init; drifting away means the trunk is learning a non-trivial rescaling. |
+| `beta` | LayerNorm's learned shift (nn.LayerNorm.bias), one per normalized feature. Identity init is all-zeros, so a norm near zero means it hasn't moved from init. |
 
 #### `update_ratio`
 
@@ -211,6 +339,7 @@ Whether optimization itself is healthy — orthogonal to whether communication h
 | `value_head` | the sender projection in a specialist's QKVEncoder — what gets broadcast as a message. |
 | `decoder` | the MLP that turns an aggregated message into an injection back into the backbone. |
 | `fc` | the backbone's own classification head — the one part of the otherwise-frozen backbone left trainable. |
+| `trunk` | the shared MLP trunk before it diverges into query/key/value heads. Present for --encoder mlp (Linear->GELU->LayerNorm) and --encoder mlp_no_ln (Linear->GELU, no LayerNorm) — not for qkv, which has no shared trunk at all. |
 
 ## Replicate-group summary metrics
 
